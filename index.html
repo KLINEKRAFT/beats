@@ -827,6 +827,59 @@ let kitReverb = null, kitReverbWet = null, kitReverbInput = null;
 let kitDelay = null, kitDelayFb = null, kitDelayWet = null, kitDelayInput = null;
 const padChains = new Map();
 let sharedNoiseBuf = null;
+let silentLoopReady = false;
+
+/* ------------------------------------------------------------
+   iOS silent-switch bypass:
+   - Modern Safari (iOS 16.4+) supports navigator.audioSession.type — set it
+     to 'playback' so audio plays through the silent switch with no hacks.
+   - On older iOS, the only known workaround is to play an HTML <audio>
+     element with real audio content (not a sub-50ms blip): that promotes
+     the audio session category from 'ambient' (mute respects switch) to
+     'playback' (ignores it). Web Audio rides along.
+   - The inline base64 WAV in the HTML is a fallback marker; we replace it
+     with a 1-second silent WAV blob at startup so iOS reliably sees ≥1s of
+     real audio when the loop plays.
+------------------------------------------------------------ */
+function makeSilentWavURL(durSec) {
+  const sr = 8000;
+  const numSamples = Math.max(1, Math.floor(sr * durSec));
+  const dataSize = numSamples * 2;            // 16-bit mono
+  const buf = new ArrayBuffer(44 + dataSize);
+  const v = new DataView(buf);
+  let p = 0;
+  const w = (s) => { for (let i = 0; i < s.length; i++) v.setUint8(p++, s.charCodeAt(i)); };
+  w('RIFF'); v.setUint32(p, 36 + dataSize, true); p += 4;
+  w('WAVE'); w('fmt '); v.setUint32(p, 16, true); p += 4;
+  v.setUint16(p, 1, true); p += 2;            // PCM
+  v.setUint16(p, 1, true); p += 2;            // mono
+  v.setUint32(p, sr, true); p += 4;
+  v.setUint32(p, sr * 2, true); p += 4;       // byte rate
+  v.setUint16(p, 2, true); p += 2;            // block align
+  v.setUint16(p, 16, true); p += 2;           // bits per sample
+  w('data'); v.setUint32(p, dataSize, true);
+  return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+}
+
+function setupSilentLoop() {
+  // Modern path: explicit audio session category (Safari 16.4+).
+  try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch(_){}
+
+  const sl = document.getElementById('silentLoop');
+  if (!sl) return;
+  if (!silentLoopReady) {
+    try {
+      sl.src = makeSilentWavURL(1);   // 1-second silent loop (8 kHz mono ≈ 16 KB)
+      sl.load();
+      silentLoopReady = true;
+    } catch(_){}
+  }
+  if (sl.paused) {
+    sl.volume = 0;
+    const p = sl.play();
+    if (p && p.catch) p.catch(() => { /* next gesture will retry */ });
+  }
+}
 
 function makeReverbIR(sizeNorm) {
   const sr = audioCtx.sampleRate;
@@ -894,12 +947,11 @@ function initAudio() {
 
 function ensureAudio() {
   if (!audioCtx) initAudio();
-  if (audioCtx.state === 'suspended') audioCtx.resume();
-  const sl = document.getElementById('silentLoop');
-  if (sl && sl.paused) {
-    sl.volume = 0;
-    sl.play().catch(() => {});
+  attachAudioRecovery();
+  if (audioCtx.state === 'suspended' || audioCtx.state === 'interrupted') {
+    audioCtx.resume().catch(()=>{});
   }
+  setupSilentLoop();
 }
 
 function delayTimeFromKnob(v) {
@@ -2139,8 +2191,25 @@ async function requestWakeLock() {
 }
 function releaseWakeLock() { if (wakeLock) { wakeLock.release().catch(()=>{}); wakeLock = null; } }
 document.addEventListener('visibilitychange', () => {
-  if (state.playing && document.visibilityState === 'visible') requestWakeLock();
+  if (document.visibilityState === 'visible') {
+    // Restore audio session on return from background / lock screen
+    if (audioCtx && audioCtx.state !== 'running') audioCtx.resume().catch(()=>{});
+    setupSilentLoop();
+    if (state.playing) requestWakeLock();
+  }
 });
+
+// Auto-recover when iOS interrupts the AudioContext (phone call, alarm, etc.)
+function attachAudioRecovery() {
+  if (!audioCtx || audioCtx._recoveryAttached) return;
+  audioCtx._recoveryAttached = true;
+  audioCtx.addEventListener && audioCtx.addEventListener('statechange', () => {
+    if (audioCtx.state === 'interrupted' || audioCtx.state === 'suspended') {
+      audioCtx.resume().catch(()=>{});
+      setupSilentLoop();
+    }
+  });
+}
 
 function startLoop(){
   ensureAudio();
