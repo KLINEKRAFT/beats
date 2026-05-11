@@ -195,6 +195,13 @@
   .pad.step-mode.step-on .step-num { color: rgba(255,255,255,0.9); }
   .pad.step-mode.step-current { box-shadow: inset 0 0 0 2px var(--ink), inset 0 1px 0 rgba(255,255,255,0.25); }
   .pad.step-mode.step-on.editing-vel { box-shadow: inset 0 0 0 2px var(--ink); }
+  /* Probabilistic step indicator: small open circle in the bottom-right of step-on pads with prob < 100 */
+  .pad.step-mode.step-on.has-prob::before {
+    content: ""; position: absolute; bottom: 4px; right: 4px;
+    width: 6px; height: 6px; border-radius: 50%;
+    border: 1.2px solid rgba(255,255,255,0.85);
+    background: transparent;
+  }
 
   /* Scene-mode pad styling */
   .pad.scene-mode { padding: 0; align-items: center; justify-content: center; }
@@ -331,6 +338,8 @@
     font-size: 10px; letter-spacing: 0.12em; text-transform: lowercase;
     color: var(--accent); cursor: pointer;
   }
+  .drawer-actions { display: flex; align-items: center; gap: 14px; }
+  .drawer-action.exporting { color: var(--ink-soft); pointer-events: none; }
   .drawer-list {
     overflow-y: auto;
     padding: 4px 0 16px;
@@ -532,7 +541,10 @@
   <div class="drawer-handle"></div>
   <div class="drawer-header">
     <div class="drawer-title">library</div>
-    <div class="drawer-action" id="saveAction">save current</div>
+    <div class="drawer-actions">
+      <div class="drawer-action" id="exportAction">↓ wav</div>
+      <div class="drawer-action" id="saveAction">save current</div>
+    </div>
   </div>
   <div class="save-row" id="saveRow">
     <input type="text" id="saveName" placeholder="pattern name" maxlength="28" />
@@ -623,6 +635,11 @@ const SCALES = {
   'major pent':[0,2,4,7,9],
   'minor':[0,2,3,5,7,8,10],
   'major':[0,2,4,5,7,9,11],
+  'dorian':[0,2,3,5,7,9,10],
+  'mixolydian':[0,2,4,5,7,9,10],
+  'phrygian':[0,1,3,5,7,8,10],
+  'lydian':[0,2,4,6,7,9,11],
+  'harm minor':[0,2,3,5,7,8,11],
   'blues':[0,3,5,6,7,10],
   'chromatic':[0,1,2,3,4,5,6,7,8,9,10,11],
 };
@@ -645,7 +662,7 @@ const KITFX_KNOB_DEFS = [
   {param:'kitRevSize', label:'rev size'},
   {param:'kitDelTime', label:'del time'},
   {param:'kitDelFb',   label:'del fb'},
-  {param:'_kitX1',     label:'',  dim:true},
+  {param:'swing',      label:'swing'},
   {param:'_kitX2',     label:'',  dim:true},
   {param:'_kitX3',     label:'',  dim:true},
   {param:'_kitX4',     label:'',  dim:true},
@@ -662,7 +679,7 @@ const PADFX_KNOB_DEFS = [
 ];
 
 const DEFAULT_KIT_KNOBS = { filterFreq:0.85, filterReso:0.15, transpose:0.50, detune:0.50, attack:0.05, hold:0.40, decay:0.55, pan:0.50 };
-const DEFAULT_KITFX = { kitRevAmt:0.00, kitRevSize:0.50, kitDelTime:0.50, kitDelFb:0.00 };
+const DEFAULT_KITFX = { kitRevAmt:0.00, kitRevSize:0.50, kitDelTime:0.50, kitDelFb:0.00, swing:0.00 };
 const DEFAULT_PADFX = { padRevAmt:0.00, padRevSize:0.50, padDelAmt:0.00, padDelFb:0.00 };
 
 /* ============================================================
@@ -683,6 +700,12 @@ const state = {
   patterns: Array.from({length: NUM_TRACKS}, () =>
     Array.from({length: NUM_SCENES}, () =>
       Array.from({length: NUM_PADS}, () => Array(NUM_STEPS).fill(0))
+    )
+  ),
+  // Step-fire probability (0..100). Parallel to patterns. 100 = always fire.
+  probs: Array.from({length: NUM_TRACKS}, () =>
+    Array.from({length: NUM_SCENES}, () =>
+      Array.from({length: NUM_PADS}, () => Array(NUM_STEPS).fill(100))
     )
   ),
   trackPlayScene: Array(NUM_TRACKS).fill(0),
@@ -722,6 +745,7 @@ function saveState() {
       selectedPad: state.selectedPad,
       tracks: state.tracks,
       patterns: state.patterns,
+      probs: state.probs,
       trackPlayScene: state.trackPlayScene,
       trackParams: state.trackParams,
       padFx: state.padFx,
@@ -811,6 +835,13 @@ function loadFromObject(saved) {
         for (let p = 0; p < NUM_PADS; p++) {
           const src = saved.patterns?.[t]?.[s]?.[p];
           if (Array.isArray(src)) copySteps(state.patterns[t][s][p], src);
+          const psrc = saved.probs?.[t]?.[s]?.[p];
+          if (Array.isArray(psrc)) {
+            for (let i = 0; i < NUM_STEPS; i++) {
+              const v = psrc[i];
+              if (typeof v === 'number') state.probs[t][s][p][i] = Math.max(0, Math.min(100, v|0));
+            }
+          }
         }
       }
     }
@@ -1980,7 +2011,10 @@ function attachPadHandlers(i, pad) {
   let editingVel = false;
   let lastTapAt = 0;
   let pointerStartY = 0;
+  let pointerStartX = 0;
   let velAtPress = 0;
+  let probAtPress = 100;
+  let editAxis = null;  // 'v' | 'h' — locked after first significant motion in editingVel mode
   let didMoveSignificant = false;
   let sceneLongHandled = false;
   let pressedAt = 0;
@@ -2011,6 +2045,8 @@ function attachPadHandlers(i, pad) {
   pad.addEventListener('pointerdown', (e) => {
     try { pad.setPointerCapture(e.pointerId); } catch(_){}
     pointerStartY = e.clientY;
+    pointerStartX = e.clientX;
+    editAxis = null;
     didMoveSignificant = false;
     ensureAudio();
 
@@ -2047,6 +2083,7 @@ function attachPadHandlers(i, pad) {
     if (state.mode === 'seq') {
       const stepOn = activeScenePat()[state.selectedPad][i] > 0;
       velAtPress = activeScenePat()[state.selectedPad][i];
+      probAtPress = state.probs[state.trackIdx][state.sceneIdx][state.selectedPad][i];
       if (stepOn) {
         pressTimer = setTimeout(() => {
           editingVel = true;
@@ -2069,12 +2106,25 @@ function attachPadHandlers(i, pad) {
   pad.addEventListener('pointermove', (e) => {
     if (state.mode === 'seq') {
       const dy = e.clientY - pointerStartY;
-      if (Math.abs(dy) > 4) didMoveSignificant = true;
+      const dx = e.clientX - pointerStartX;
+      if (Math.abs(dy) > 4 || Math.abs(dx) > 4) didMoveSignificant = true;
       if (editingVel) {
-        const newVel = clamp(Math.round(velAtPress + (-dy / 100) * 127), 1, 127);
-        activeScenePat()[state.selectedPad][i] = newVel;
-        updateVelSliderDisplay(pad, newVel);
-        rebuildVelocityStrip();
+        // Axis-lock once the user commits to a direction. Vertical = velocity,
+        // horizontal = step probability.
+        if (!editAxis && (Math.abs(dy) > 6 || Math.abs(dx) > 6)) {
+          editAxis = (Math.abs(dy) >= Math.abs(dx)) ? 'v' : 'h';
+        }
+        if (editAxis === 'v' || !editAxis) {
+          const newVel = clamp(Math.round(velAtPress + (-dy / 100) * 127), 1, 127);
+          activeScenePat()[state.selectedPad][i] = newVel;
+          updateVelSliderDisplay(pad, newVel);
+          rebuildVelocityStrip();
+        } else {
+          // Horizontal drag → probability 0..100
+          const newProb = clamp(Math.round(probAtPress + (dx / 100) * 100), 0, 100);
+          state.probs[state.trackIdx][state.sceneIdx][state.selectedPad][i] = newProb;
+          updateProbDisplay(pad, newProb);
+        }
       }
       return;
     }
@@ -2158,6 +2208,7 @@ function attachPadHandlers(i, pad) {
 
       if (stepCurrent > 0) {
         activeScenePat()[state.selectedPad][i] = 0;
+        state.probs[state.trackIdx][state.sceneIdx][state.selectedPad][i] = 100;
       } else {
         activeScenePat()[state.selectedPad][i] = 100;
         playSound(state.trackIdx, state.selectedPad);
@@ -2189,6 +2240,12 @@ function updateVelSliderDisplay(pad, vel) {
   const pct = clamp(vel / 127, 0.05, 1);
   slider.style.height = (pct * 70) + '%';
 }
+function updateProbDisplay(pad, prob) {
+  // Immediate visual feedback while dragging — toggle the has-prob class and
+  // scale step opacity to match.
+  pad.classList.toggle('has-prob', prob < 100);
+  pad.style.opacity = (0.45 + (prob / 100) * 0.55).toFixed(3);
+}
 
 function applyMode(){
   const tr = state.tracks[state.trackIdx];
@@ -2198,7 +2255,7 @@ function applyMode(){
   padsEl.classList.toggle('piano-view', isPiano);
   pads.forEach((pad, i) => {
     pad.classList.remove('step-mode','step-on','step-current','has-step','selected','empty','editing-vel',
-      'scene-mode','scene-empty','scene-has','scene-playing','scene-queued','scene-focus','is-root','has-sample');
+      'scene-mode','scene-empty','scene-has','scene-playing','scene-queued','scene-focus','is-root','has-sample','has-prob');
     const label = pad.querySelector('.pad-label');
     const num = pad.querySelector('.step-num');
     pad.style.background = '';
@@ -2233,10 +2290,13 @@ function applyMode(){
       label.textContent = '';
       num.textContent = String(i+1).padStart(2,'0');
       const vel = activeScenePat()[state.selectedPad][i];
+      const prob = state.probs[state.trackIdx][state.sceneIdx][state.selectedPad][i];
       if (vel > 0) {
         pad.classList.add('step-on');
-        const op = 0.45 + (vel/127) * 0.55;
-        pad.style.opacity = op;
+        // Opacity reflects both velocity and probability — lower prob = visibly fainter.
+        const op = (0.45 + (vel/127) * 0.55) * (prob / 100);
+        pad.style.opacity = Math.max(0.15, op);
+        if (prob < 100) pad.classList.add('has-prob');
       }
       if (state.playing && i === state.currentStep) pad.classList.add('step-current');
     }
@@ -2512,6 +2572,16 @@ let schedulerTimer = null;
 const recentTriggers = [];
 
 function stepDuration() { return (60 / state.bpm) / 4; }
+// Swing: shift each off-beat 16th (odd-indexed step) later by up to 1/3 of a
+// step (at swing = 1.0 the off-beat sits on the triplet position).
+// Even step → step+1: longer; odd step → step+1: shorter.
+function stepDurationAfter(step) {
+  const base = stepDuration();
+  const swing = state.knobs.swing || 0;
+  if (swing <= 0) return base;
+  const offset = base * swing * (1/3);
+  return (step % 2 === 0) ? base + offset : base - offset;
+}
 
 function applyPendingScenesIfWrap(step) {
   if (step !== 0) return;
@@ -2527,10 +2597,15 @@ function scheduleStep(step, time) {
   applyPendingScenesIfWrap(step);
   for (let t = 0; t < NUM_TRACKS; t++) {
     if (effectiveMuted(t)) continue;
-    const scenePat = state.patterns[t][state.trackPlayScene[t]];
+    const sceneIdx = state.trackPlayScene[t];
+    const scenePat = state.patterns[t][sceneIdx];
+    const sceneProb = state.probs[t][sceneIdx];
     for (let p = 0; p < NUM_PADS; p++) {
       const v = scenePat[p][step];
-      if (v > 0) playSound(t, p, time, v);
+      if (v <= 0) continue;
+      const prob = sceneProb[p][step];
+      if (prob < 100 && Math.random() * 100 >= prob) continue;
+      playSound(t, p, time, v);
     }
   }
   recentTriggers.push({ step, audioTime: time });
@@ -2538,7 +2613,7 @@ function scheduleStep(step, time) {
 function schedulerTick() {
   while (nextStepTime < audioCtx.currentTime + SCHEDULE_AHEAD_S) {
     scheduleStep(scheduledStep, nextStepTime);
-    nextStepTime += stepDuration();
+    nextStepTime += stepDurationAfter(scheduledStep);
     scheduledStep = (scheduledStep + 1) % NUM_STEPS;
   }
 }
@@ -2824,12 +2899,52 @@ smpBtn.addEventListener('pointercancel', () => {
 
 const bpmEl = document.getElementById('bpmDisplay');
 bpmEl.textContent = state.bpm + ' bpm';
+
+// Tap-tempo: short taps within a 2s window are tap-tempo. Long-press = cycle
+// through preset BPMs.
+let bpmTapTimes = [];
+let bpmPressTimer = null;
+let bpmLongHandled = false;
+const BPM_TAP_WINDOW_MS = 2000;
+
 bpmEl.addEventListener('pointerdown', () => {
-  const idx = state.bpmCycle.indexOf(state.bpm);
-  state.bpm = state.bpmCycle[(idx+1) % state.bpmCycle.length];
-  bpmEl.textContent = state.bpm + ' bpm';
-  applyKnobsToAudio();
-  saveState();
+  bpmLongHandled = false;
+  bpmPressTimer = setTimeout(() => {
+    bpmLongHandled = true;
+    const idx = state.bpmCycle.indexOf(state.bpm);
+    state.bpm = state.bpmCycle[(idx + 1) % state.bpmCycle.length];
+    bpmEl.textContent = state.bpm + ' bpm';
+    applyKnobsToAudio();
+    saveState();
+    bpmTapTimes = [];
+    if (window.navigator.vibrate) window.navigator.vibrate(15);
+  }, LONG_PRESS_MS);
+});
+
+bpmEl.addEventListener('pointerup', () => {
+  if (bpmPressTimer) { clearTimeout(bpmPressTimer); bpmPressTimer = null; }
+  if (bpmLongHandled) return;
+
+  const now = performance.now();
+  if (bpmTapTimes.length && now - bpmTapTimes[bpmTapTimes.length - 1] > BPM_TAP_WINDOW_MS) {
+    bpmTapTimes = [];
+  }
+  bpmTapTimes.push(now);
+  if (bpmTapTimes.length > 4) bpmTapTimes.shift();   // keep last 4
+  if (bpmTapTimes.length >= 2) {
+    let sum = 0;
+    for (let i = 1; i < bpmTapTimes.length; i++) sum += bpmTapTimes[i] - bpmTapTimes[i - 1];
+    const avgMs = sum / (bpmTapTimes.length - 1);
+    const bpm = Math.round(60000 / avgMs);
+    state.bpm = Math.max(40, Math.min(220, bpm));
+    bpmEl.textContent = state.bpm + ' bpm';
+    applyKnobsToAudio();
+    saveState();
+  }
+});
+
+bpmEl.addEventListener('pointercancel', () => {
+  if (bpmPressTimer) { clearTimeout(bpmPressTimer); bpmPressTimer = null; }
 });
 
 /* ============================================================
@@ -2844,8 +2959,10 @@ clearBtn.addEventListener('pointerdown', () => {
     clearLongHandled = true;
     for (let t = 0; t < NUM_TRACKS; t++)
       for (let s = 0; s < NUM_SCENES; s++)
-        for (let p = 0; p < NUM_PADS; p++)
+        for (let p = 0; p < NUM_PADS; p++) {
           state.patterns[t][s][p].fill(0);
+          state.probs[t][s][p].fill(100);
+        }
     applyMode();
     rebuildVelocityStrip();
     saveState();
@@ -2858,11 +2975,18 @@ clearBtn.addEventListener('pointerup', () => {
   if (clearLongHandled) return;
   if (state.mode === 'seq') {
     activeScenePat()[state.selectedPad].fill(0);
+    state.probs[state.trackIdx][state.sceneIdx][state.selectedPad].fill(100);
   } else if (state.mode === 'scenes') {
     const f = state.scenesFocus;
-    for (let p = 0; p < NUM_PADS; p++) state.patterns[f.track][f.scene][p].fill(0);
+    for (let p = 0; p < NUM_PADS; p++) {
+      state.patterns[f.track][f.scene][p].fill(0);
+      state.probs[f.track][f.scene][p].fill(100);
+    }
   } else {
-    for (let p = 0; p < NUM_PADS; p++) activeScenePat()[p].fill(0);
+    for (let p = 0; p < NUM_PADS; p++) {
+      activeScenePat()[p].fill(0);
+      state.probs[state.trackIdx][state.sceneIdx][p].fill(100);
+    }
   }
   applyMode();
   rebuildVelocityStrip();
@@ -2970,6 +3094,104 @@ saveConfirm.addEventListener('pointerdown', () => {
 saveName.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') saveConfirm.dispatchEvent(new Event('pointerdown'));
 });
+
+/* ============================================================
+   EXPORT TO WAV — capture one loop length of master output
+============================================================ */
+const exportAction = document.getElementById('exportAction');
+
+function encodeWav(left, right, sampleRate) {
+  const numSamples = left.length;
+  const numChannels = 2;
+  const bytesPerSample = 2;
+  const dataSize = numSamples * numChannels * bytesPerSample;
+  const buf = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buf);
+  let p = 0;
+  const w = (s) => { for (let i = 0; i < s.length; i++) view.setUint8(p++, s.charCodeAt(i)); };
+  w('RIFF'); view.setUint32(p, 36 + dataSize, true); p += 4;
+  w('WAVE'); w('fmt '); view.setUint32(p, 16, true); p += 4;
+  view.setUint16(p, 1, true); p += 2;
+  view.setUint16(p, numChannels, true); p += 2;
+  view.setUint32(p, sampleRate, true); p += 4;
+  view.setUint32(p, sampleRate * numChannels * bytesPerSample, true); p += 4;
+  view.setUint16(p, numChannels * bytesPerSample, true); p += 2;
+  view.setUint16(p, 16, true); p += 2;
+  w('data'); view.setUint32(p, dataSize, true); p += 4;
+  for (let i = 0; i < numSamples; i++) {
+    const sL = Math.max(-1, Math.min(1, left[i]));
+    const sR = Math.max(-1, Math.min(1, right[i]));
+    view.setInt16(p, (sL * 32767) | 0, true); p += 2;
+    view.setInt16(p, (sR * 32767) | 0, true); p += 2;
+  }
+  return buf;
+}
+
+let exporting = false;
+async function exportToWav() {
+  if (exporting) return;
+  ensureAudio();
+  if (!audioCtx) { showToast('audio not ready'); return; }
+
+  const wasPlaying = state.playing;
+  if (wasPlaying) stopLoop();
+
+  // Tap masterGain into a ScriptProcessor without disrupting normal output.
+  // masterGain still connects to destination; we just add a parallel branch.
+  const cap = audioCtx.createScriptProcessor(4096, 2, 2);
+  const chunksL = [], chunksR = [];
+  cap.onaudioprocess = (e) => {
+    const ib = e.inputBuffer;
+    chunksL.push(new Float32Array(ib.getChannelData(0)));
+    chunksR.push(new Float32Array(ib.numberOfChannels > 1 ? ib.getChannelData(1) : ib.getChannelData(0)));
+  };
+  const sink = audioCtx.createGain(); sink.gain.value = 0;
+  masterGain.connect(cap).connect(sink).connect(audioCtx.destination);
+
+  exporting = true;
+  exportAction.classList.add('exporting');
+  exportAction.textContent = 'rendering…';
+
+  // Render exactly one loop (16 steps) at current swing/BPM, with a tiny tail
+  // so the last hit's release isn't clipped.
+  let total = 0;
+  for (let s = 0; s < NUM_STEPS; s++) total += stepDurationAfter(s);
+  const loopMs = total * 1000;
+  startLoop();
+  await new Promise(r => setTimeout(r, loopMs + 250));   // 250 ms tail
+  stopLoop();
+
+  // Disconnect the capture branch.
+  try { masterGain.disconnect(cap); } catch(_){}
+  try { cap.disconnect(); } catch(_){}
+  cap.onaudioprocess = null;
+
+  // Concat
+  let n = 0; for (const c of chunksL) n += c.length;
+  const L = new Float32Array(n), R = new Float32Array(n);
+  let off = 0;
+  for (let i = 0; i < chunksL.length; i++) {
+    L.set(chunksL[i], off); R.set(chunksR[i], off);
+    off += chunksL[i].length;
+  }
+  const wav = encodeWav(L, R, audioCtx.sampleRate);
+  const blob = new Blob([wav], { type: 'audio/wav' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `klinekraft-${state.bpm}bpm-${Date.now()}.wav`;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 2000);
+
+  exporting = false;
+  exportAction.classList.remove('exporting');
+  exportAction.textContent = '↓ wav';
+  showToast('exported');
+  if (wasPlaying) startLoop();
+}
+
+exportAction.addEventListener('pointerdown', exportToWav);
 
 /* ============================================================
    PRESET PICKER DRAWER
