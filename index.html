@@ -663,8 +663,8 @@ const KITFX_KNOB_DEFS = [
   {param:'kitDelTime', label:'del time'},
   {param:'kitDelFb',   label:'del fb'},
   {param:'swing',      label:'swing'},
-  {param:'_kitX2',     label:'',  dim:true},
-  {param:'_kitX3',     label:'',  dim:true},
+  {param:'kitDrive',   label:'drive'},
+  {param:'kitCrush',   label:'crush'},
   {param:'_kitX4',     label:'',  dim:true},
 ];
 const PADFX_KNOB_DEFS = [
@@ -679,7 +679,7 @@ const PADFX_KNOB_DEFS = [
 ];
 
 const DEFAULT_KIT_KNOBS = { filterFreq:0.85, filterReso:0.15, transpose:0.50, detune:0.50, attack:0.05, hold:0.40, decay:0.55, pan:0.50 };
-const DEFAULT_KITFX = { kitRevAmt:0.00, kitRevSize:0.50, kitDelTime:0.50, kitDelFb:0.00, swing:0.00 };
+const DEFAULT_KITFX = { kitRevAmt:0.00, kitRevSize:0.50, kitDelTime:0.50, kitDelFb:0.00, swing:0.00, kitDrive:0.00, kitCrush:0.00 };
 const DEFAULT_PADFX = { padRevAmt:0.00, padRevSize:0.50, padDelAmt:0.00, padDelFb:0.00 };
 
 /* ============================================================
@@ -939,7 +939,8 @@ function loadFromSnapshot(snap) {
    AUDIO ENGINE
 ============================================================ */
 let audioCtx = null;
-let masterGain = null, kitFilter = null, kitPanner = null, kitInput = null;
+let masterGain = null, masterComp = null, kitFilter = null, kitPanner = null, kitInput = null;
+let kitDrive = null, kitCrush = null;
 let kitReverb = null, kitReverbWet = null, kitReverbInput = null;
 let kitDelay = null, kitDelayFb = null, kitDelayWet = null, kitDelayInput = null;
 const padChains = new Map();
@@ -977,6 +978,28 @@ function setupSilentLoop() {
   }
 }
 
+// Tanh-style saturation curve. amount 0..1 → linear (passthrough) to heavily clipped.
+function makeDriveCurve(amount) {
+  const k = 1 + amount * 30;
+  const curve = new Float32Array(2048);
+  for (let i = 0; i < 2048; i++) {
+    const x = (i / 1023.5) - 1;
+    curve[i] = Math.tanh(k * x) / Math.tanh(k);
+  }
+  return curve;
+}
+// Amplitude-quantize curve (bit-crush). amount 0..1 → 16 bits → 2 bits.
+function makeCrushCurve(amount) {
+  const bits = Math.max(2, Math.round(16 - amount * 14));
+  const steps = Math.pow(2, bits - 1);
+  const curve = new Float32Array(4096);
+  for (let i = 0; i < 4096; i++) {
+    const x = (i / 2047.5) - 1;
+    curve[i] = Math.round(x * steps) / steps;
+  }
+  return curve;
+}
+
 function makeReverbIR(sizeNorm) {
   const sr = audioCtx.sampleRate;
   const dur = 0.4 + sizeNorm * 3.1;
@@ -1003,6 +1026,15 @@ function initAudio() {
   masterGain.gain.value = 0.7;
   masterGain.connect(audioCtx.destination);
 
+  // Master compressor / limiter — always on, keeps the layered mix from clipping.
+  masterComp = audioCtx.createDynamicsCompressor();
+  masterComp.threshold.value = -12;
+  masterComp.knee.value      = 8;
+  masterComp.ratio.value     = 4;
+  masterComp.attack.value    = 0.005;
+  masterComp.release.value   = 0.15;
+  masterComp.connect(masterGain);
+
   // FFT analyser tap (post-master) — feeds the modulation viz strip
   analyser = audioCtx.createAnalyser();
   analyser.fftSize = 64;             // 32 frequency bins, smooth response
@@ -1011,17 +1043,25 @@ function initAudio() {
   startVizLoop();
 
   kitPanner = audioCtx.createStereoPanner ? audioCtx.createStereoPanner() : null;
-  if (kitPanner) kitPanner.connect(masterGain);
+  if (kitPanner) kitPanner.connect(masterComp);
 
   kitFilter = audioCtx.createBiquadFilter();
   kitFilter.type = 'lowpass';
   kitFilter.frequency.value = 18000;
   kitFilter.Q.value = 0.7;
-  kitFilter.connect(kitPanner || masterGain);
+  kitFilter.connect(kitPanner || masterComp);
+
+  // Drive (tanh saturation) then bit-crusher, both pre-filter so the filter
+  // can tame harsh harmonics they introduce.
+  kitDrive = audioCtx.createWaveShaper();
+  kitDrive.curve = makeDriveCurve(0);
+  kitCrush = audioCtx.createWaveShaper();
+  kitCrush.curve = makeCrushCurve(0);
+  kitDrive.connect(kitCrush).connect(kitFilter);
 
   kitInput = audioCtx.createGain();
   kitInput.gain.value = 1;
-  kitInput.connect(kitFilter);
+  kitInput.connect(kitDrive);
 
   kitReverbInput = audioCtx.createGain();
   kitReverbInput.gain.value = 1;
@@ -1108,6 +1148,16 @@ function applyKnobsToAudio() {
   kitDelay.delayTime.setTargetAtTime(delayTimeFromKnob(k.kitDelTime), t, 0.02);
   kitDelayFb.gain.setTargetAtTime(k.kitDelFb * 0.85, t, 0.02);
   kitDelayWet.gain.setTargetAtTime(k.kitDelTime > 0 ? 0.6 : 0, t, 0.02);
+
+  // Drive + crush curves are regenerated when the knob moves enough to matter.
+  if (kitDrive && Math.abs((kitDrive._amt||0) - (k.kitDrive||0)) > 0.02) {
+    kitDrive.curve = makeDriveCurve(k.kitDrive||0);
+    kitDrive._amt = k.kitDrive||0;
+  }
+  if (kitCrush && Math.abs((kitCrush._amt||0) - (k.kitCrush||0)) > 0.03) {
+    kitCrush.curve = makeCrushCurve(k.kitCrush||0);
+    kitCrush._amt = k.kitCrush||0;
+  }
 }
 
 // Per-track gain + panner. Lazy — built the first time a sound from the
@@ -3426,6 +3476,99 @@ function runIntro() {
   setTimeout(finishIntro, 1450);
 }
 runIntro();
+
+/* ============================================================
+   KEYBOARD SHORTCUTS
+     space            → play / stop
+     /                → toggle improv capture
+     \                → toggle record-arm
+     m                → toggle mic sample record   (shift+m = clear selected pad's sample)
+     1 2 3 4          → top row pads (0..3)
+     q w e r          → row 2     (4..7)
+     a s d f          → row 3     (8..11)
+     z x c v          → bottom row (12..15)
+     shift + 1..4     → switch track
+   Pad letters take precedence over command letters — c/r/m collide so commands
+   live on punctuation + 'm' (which is unambiguous since m isn't a pad key).
+============================================================ */
+const KEY_TO_PAD = {
+  '1':0,  '2':1,  '3':2,  '4':3,
+  'q':4,  'w':5,  'e':6,  'r':7,
+  'a':8,  's':9,  'd':10, 'f':11,
+  'z':12, 'x':13, 'c':14, 'v':15,
+};
+function triggerPadByKey(idx) {
+  ensureAudio();
+  const padEl = pads[idx];
+  if (!padEl) return;
+  padEl.classList.add('flash');
+  setTimeout(() => padEl.classList.remove('flash'), 120);
+  if (state.mode === 'pads' || state.mode === 'padfx' || state.mode === 'kitfx') {
+    tapPadInPadsMode(idx);
+    saveState();
+  } else if (state.mode === 'seq') {
+    const cur = activeScenePat()[state.selectedPad][idx];
+    if (cur > 0) {
+      activeScenePat()[state.selectedPad][idx] = 0;
+      state.probs[state.trackIdx][state.sceneIdx][state.selectedPad][idx] = 100;
+    } else {
+      activeScenePat()[state.selectedPad][idx] = 100;
+      playSound(state.trackIdx, state.selectedPad);
+    }
+    applyMode();
+    rebuildVelocityStrip();
+    saveState();
+  }
+}
+
+document.addEventListener('keydown', (e) => {
+  const tag = (e.target && e.target.tagName) || '';
+  if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+  // Shift + 1..4 = switch track.
+  if (e.shiftKey && /^[1-4]$/.test(e.key)) {
+    switchToTrack(parseInt(e.key, 10) - 1);
+    e.preventDefault();
+    return;
+  }
+  if (e.code === 'Space') {
+    if (state.playing) stopLoop(); else startLoop();
+    e.preventDefault();
+    return;
+  }
+  const k = e.key.toLowerCase();
+  if (k === '/' && !e.repeat) {
+    if (state.capturing) endCapture(); else startCapture();
+    e.preventDefault();
+    return;
+  }
+  if (k === '\\' && !e.repeat) {
+    setRecording(!state.recording);
+    if (state.recording && !state.playing) startLoop();
+    e.preventDefault();
+    return;
+  }
+  if (k === 'm' && !e.repeat) {
+    if (e.shiftKey) {
+      const t = state.trackIdx, p = state.selectedPad;
+      if (state.samples[t] && state.samples[t][p]) {
+        state.samples[t][p] = null;
+        deleteSample(t, p);
+        applyMode();
+        showToast('sample cleared');
+      }
+    } else {
+      if (state.recordingSample) stopSampleRecord(); else startSampleRecord();
+    }
+    e.preventDefault();
+    return;
+  }
+  if (KEY_TO_PAD.hasOwnProperty(k) && !e.repeat) {
+    triggerPadByKey(KEY_TO_PAD[k]);
+    e.preventDefault();
+  }
+});
 
 /* ============================================================
    INIT
