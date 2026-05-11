@@ -1,0 +1,25 @@
+{
+  "name": "klinekraft beat",
+  "short_name": "klinekraft",
+  "description": "klinekraft beat — multi-track web groove box",
+  "start_url": "../index.html",
+  "scope": "../",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#dbd7d3",
+  "theme_color": "#dbd7d3",
+  "icons": [
+    {
+      "src": "icon-180.png",
+      "sizes": "180x180",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "klinekraft_beats_icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
