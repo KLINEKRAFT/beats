@@ -126,15 +126,15 @@
   }
 
   /* ---- Knobs ---- */
-  .knobs { padding: 14px 16px 12px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px 8px; flex-shrink: 0; }
+  .knobs { padding: 14px 16px 10px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px 6px; flex-shrink: 0; }
   .knob-cell { display: flex; flex-direction: column; align-items: center; gap: 6px; position: relative; }
-  .knob-label { font-size: 9px; letter-spacing: 0.12em; text-transform: lowercase; color: var(--ink-soft); }
-  .knob { width: 60px; height: 60px; position: relative; touch-action: none; cursor: ns-resize; }
+  .knob-label { font-size: 10px; letter-spacing: 0.12em; text-transform: lowercase; color: var(--ink-soft); }
+  .knob { width: 80px; height: 80px; position: relative; touch-action: none; cursor: ns-resize; }
   .knob svg { width: 100%; height: 100%; display: block; pointer-events: none; }
-  .knob .track-arc { fill: none; stroke: var(--bone-deep); stroke-width: 2.4; }
-  .knob .arc { fill: none; stroke: var(--accent); stroke-width: 2.4; }
-  .knob .tick { stroke: var(--ink); stroke-width: 1.6; }
-  .knob-value { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 10px; color: var(--ink); opacity: 0; pointer-events: none; font-variant-numeric: tabular-nums; transition: opacity 0.18s ease; }
+  .knob .track-arc { fill: none; stroke: var(--bone-deep); stroke-width: 3; }
+  .knob .arc { fill: none; stroke: var(--accent); stroke-width: 3; }
+  .knob .tick { stroke: var(--ink); stroke-width: 2; stroke-linecap: round; }
+  .knob-value { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 12px; color: var(--ink); opacity: 0; pointer-events: none; font-variant-numeric: tabular-nums; transition: opacity 0.18s ease; }
   .knob.editing .knob-value { opacity: 1; }
   .knob.editing { cursor: grabbing; }
 
@@ -159,7 +159,6 @@
     touch-action: none;
     overflow: hidden;
   }
-  .pad.flash { background: var(--accent); transform: scale(0.985); }
   .pad.selected {
     background: var(--pad);
     box-shadow:
@@ -169,7 +168,6 @@
   }
   .pad.empty { opacity: 0.45; cursor: default; }
   .pad-label { font-size: 8px; letter-spacing: 0.08em; text-transform: lowercase; color: var(--ink-soft); pointer-events: none; }
-  .pad.flash .pad-label { color: rgba(255,255,255,0.9); }
   .pad .step-dot { position: absolute; bottom: 6px; right: 6px; width: 6px; height: 6px; background: var(--accent); opacity: 0; transition: opacity 0.1s ease; }
   .pad.has-step .step-dot { opacity: 1; }
   .pad .root-dot {
@@ -202,6 +200,14 @@
   .pad.scene-mode.scene-queued { box-shadow: inset 0 0 0 2px var(--ink); animation: queuePulse 0.7s ease-in-out infinite; }
   @keyframes queuePulse { 0%,100% { opacity: 1; } 50% { opacity: 0.55; } }
   .pad.scene-mode.scene-focus { box-shadow: inset 0 0 0 1.5px var(--accent); }
+
+  /* Press feedback — !important so it beats every per-mode rule above
+     (including .pads.piano-view .pad.is-root which has higher specificity). */
+  .pad.flash {
+    background: var(--accent) !important;
+    transform: scale(0.985);
+  }
+  .pad.flash .pad-label, .pad.flash .step-num { color: rgba(255,255,255,0.95) !important; }
 
   .vel-slider {
     position: absolute; left: 6px; right: 6px; bottom: 6px;
@@ -1718,11 +1724,11 @@ function buildKnobs() {
 
 function renderKnob(el){
   const v = clamp(parseFloat(el.dataset.value), 0, 1);
-  const cx = 30, cy = 30, r = 24;
+  const cx = 40, cy = 40, r = 32;
   const startA = -135 * Math.PI / 180, endA = 135 * Math.PI / 180;
   const valA = startA + (endA - startA) * v;
-  const tx1 = cx + Math.cos(valA)*(r-9), ty1 = cy + Math.sin(valA)*(r-9);
-  const tx2 = cx + Math.cos(valA)*(r-2), ty2 = cy + Math.sin(valA)*(r-2);
+  const tx1 = cx + Math.cos(valA)*(r-12), ty1 = cy + Math.sin(valA)*(r-12);
+  const tx2 = cx + Math.cos(valA)*(r-2),  ty2 = cy + Math.sin(valA)*(r-2);
   const def = el._def || {};
   let display;
   const param = def.param || '';
@@ -1737,7 +1743,7 @@ function renderKnob(el){
   }
   else if (voiceKnob === 'detune') { const c = Math.round((v-0.5)*30); display = (c>0?'+':'')+c; }
   else { display = Math.round(v*100); }
-  el.innerHTML = `<svg viewBox="0 0 60 60"><path class="track-arc" d="${arcPath(cx,cy,r,startA,endA)}"/><path class="arc" d="${arcPath(cx,cy,r,startA,valA)}"/><line class="tick" x1="${tx1}" y1="${ty1}" x2="${tx2}" y2="${ty2}"/></svg><div class="knob-value">${display}</div>`;
+  el.innerHTML = `<svg viewBox="0 0 80 80"><path class="track-arc" d="${arcPath(cx,cy,r,startA,endA)}"/><path class="arc" d="${arcPath(cx,cy,r,startA,valA)}"/><line class="tick" x1="${tx1}" y1="${ty1}" x2="${tx2}" y2="${ty2}"/></svg><div class="knob-value">${display}</div>`;
 }
 
 function setupKnob(el){
@@ -1829,12 +1835,38 @@ function attachPadHandlers(i, pad) {
   let velAtPress = 0;
   let didMoveSignificant = false;
   let sceneLongHandled = false;
+  let pressedAt = 0;
+  let releaseTimer = null;
+  const FLASH_MIN_MS = 90;
+
+  function pressFlash() {
+    pad.classList.add('flash');
+    pressedAt = performance.now();
+    if (releaseTimer) { clearTimeout(releaseTimer); releaseTimer = null; }
+  }
+  function releaseFlash(immediate) {
+    if (immediate) {
+      pad.classList.remove('flash');
+      if (releaseTimer) { clearTimeout(releaseTimer); releaseTimer = null; }
+      return;
+    }
+    if (releaseTimer) return;
+    const elapsed = performance.now() - pressedAt;
+    const remaining = Math.max(0, FLASH_MIN_MS - elapsed);
+    releaseTimer = setTimeout(() => {
+      pad.classList.remove('flash');
+      releaseTimer = null;
+    }, remaining);
+  }
 
   pad.addEventListener('pointerdown', (e) => {
-    pad.setPointerCapture(e.pointerId);
+    try { pad.setPointerCapture(e.pointerId); } catch(_){}
     pointerStartY = e.clientY;
     didMoveSignificant = false;
     ensureAudio();
+
+    // Universal press feedback: pad turns orange the instant you touch it.
+    pressFlash();
 
     if (state.mode === 'scenes') {
       sceneLongHandled = false;
@@ -1870,14 +1902,14 @@ function attachPadHandlers(i, pad) {
         pressTimer = setTimeout(() => {
           editingVel = true;
           pad.classList.add('editing-vel');
+          // While dragging vel, drop the press flash so the slider is visible.
+          releaseFlash(true);
           if (window.navigator.vibrate) window.navigator.vibrate(15);
           updateVelSliderDisplay(pad, activeScenePat()[state.selectedPad][i]);
         }, LONG_PRESS_MS);
       }
     } else {
       // pads / padfx / kitfx
-      pad.classList.add('flash');
-      setTimeout(() => pad.classList.remove('flash'), 90);
       if (window.navigator.vibrate) window.navigator.vibrate(8);
       state.selectedPad = i;
       playSound(state.trackIdx, i);
@@ -1908,6 +1940,7 @@ function attachPadHandlers(i, pad) {
   pad.addEventListener('pointerup', (e) => {
     try { pad.releasePointerCapture(e.pointerId); } catch(_){}
     if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
+    releaseFlash();
 
     if (state.mode === 'scenes') {
       if (sceneLongHandled) return;
@@ -1920,8 +1953,6 @@ function attachPadHandlers(i, pad) {
       }
       state.scenesFocus = { track: trCol, scene: sceneRow };
       if (trCol === state.trackIdx) state.sceneIdx = sceneRow;
-      pad.classList.add('flash');
-      setTimeout(() => pad.classList.remove('flash'), 90);
       if (window.navigator.vibrate) window.navigator.vibrate(6);
       updateChipRow();
       updateSelectedSound();
@@ -1954,8 +1985,6 @@ function attachPadHandlers(i, pad) {
       }
       lastTapAt = now;
 
-      pad.classList.add('flash');
-      setTimeout(() => pad.classList.remove('flash'), 90);
       if (window.navigator.vibrate) window.navigator.vibrate(8);
 
       if (stepCurrent > 0) {
@@ -1972,6 +2001,7 @@ function attachPadHandlers(i, pad) {
 
   pad.addEventListener('pointercancel', () => {
     if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
+    releaseFlash(true);
     if (editingVel) {
       editingVel = false;
       pad.classList.remove('editing-vel');
