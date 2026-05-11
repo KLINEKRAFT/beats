@@ -103,6 +103,8 @@
   .track { display: flex; align-items: center; justify-content: center; font-size: 10px; letter-spacing: 0.10em; color: var(--ink-soft); position: relative; cursor: pointer; text-transform: lowercase; }
   .track.active { color: var(--ink); }
   .track.active::after { content: ""; position: absolute; left: 50%; bottom: -1px; transform: translateX(-50%); width: 22px; height: 2px; background: var(--accent); }
+  .track.muted { opacity: 0.40; text-decoration: line-through; }
+  .track.solo::before { content: "•"; position: absolute; left: 8px; top: 50%; transform: translateY(-50%); color: var(--accent); font-size: 16px; line-height: 1; }
 
   /* ---- Preset / scale chip row ---- */
   .chip-row {
@@ -398,6 +400,25 @@
     cursor: pointer; color: var(--ink-soft); font-size: 14px;
   }
   .oct-stepper .oct-val { font-size: 13px; color: var(--ink); font-variant-numeric: tabular-nums; min-width: 16px; text-align: center; }
+
+  /* Slider row (track volume / pan) */
+  .slider-row { display: flex; align-items: center; gap: 12px; }
+  .slider-row input[type="range"] {
+    flex: 1; -webkit-appearance: none; appearance: none;
+    height: 2px; background: var(--hairline); outline: none; padding: 0; margin: 0;
+  }
+  .slider-row input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 14px; height: 14px; background: var(--accent); border-radius: 50%; cursor: pointer; border: none;
+  }
+  .slider-row input[type="range"]::-moz-range-thumb {
+    width: 14px; height: 14px; background: var(--accent); border-radius: 50%; cursor: pointer; border: none;
+  }
+  .slider-val { font-size: 11px; color: var(--ink); font-variant-numeric: tabular-nums; min-width: 32px; text-align: right; }
+
+  /* Modulation viz strip */
+  .viz { height: 14px; margin: 2px 16px 4px; display: flex; align-items: flex-end; justify-content: space-between; gap: 1px; flex-shrink: 0; }
+  .viz-bar { flex: 1; background: var(--accent); opacity: 0.55; height: 0%; transition: height 0.05s ease-out; min-width: 0; }
 </style>
 </head>
 <body>
@@ -441,6 +462,8 @@
   <div class="knobs" id="knobs"></div>
 
   <div class="velocity" id="velocity"><div class="playhead" id="playhead"></div></div>
+
+  <div class="viz" id="viz"></div>
 
   <div class="pads" id="pads"></div>
 
@@ -611,10 +634,10 @@ const state = {
   sceneIdx: 0,
   selectedPad: 0,
   tracks: [
-    {name:'drums', type:'drums'},
-    {name:'bass',  type:'melodic', presetId:'long808',   key:0, scale:'minor pent', octave:1},
-    {name:'keys',  type:'melodic', presetId:'pureSine',  key:0, scale:'major',      octave:3},
-    {name:'lead',  type:'melodic', presetId:'retroLead', key:0, scale:'minor pent', octave:4},
+    {name:'drums', type:'drums',                                                                                       muted:false, solo:false, volume:1.0, pan:0.5},
+    {name:'bass',  type:'melodic', presetId:'long808',   key:0, scale:'minor pent', octave:1, layout:'sequential', muted:false, solo:false, volume:1.0, pan:0.5},
+    {name:'keys',  type:'melodic', presetId:'pureSine',  key:0, scale:'major',      octave:3, layout:'sequential', muted:false, solo:false, volume:1.0, pan:0.5},
+    {name:'lead',  type:'melodic', presetId:'retroLead', key:0, scale:'minor pent', octave:4, layout:'sequential', muted:false, solo:false, volume:1.0, pan:0.5},
   ],
   patterns: Array.from({length: NUM_TRACKS}, () =>
     Array.from({length: NUM_SCENES}, () =>
@@ -673,16 +696,20 @@ function copySteps(dst, src) {
   }
 }
 
-function padToScaleStep(padIdx) {
+// Map a 4×4 pad index to a scale step.
+//   sequential: each row up adds 4 scale steps   (cols are consecutive notes)
+//   fourths:    each row up adds 3 scale steps   (Note/Push 4ths — chord shapes)
+function padToScaleStep(padIdx, layout) {
   const rowFromTop = Math.floor(padIdx / 4);
   const col        = padIdx % 4;
   const rowFromBot = 3 - rowFromTop;
-  return rowFromBot * 4 + col;
+  const rowStride  = (layout === 'fourths') ? 3 : 4;
+  return rowFromBot * rowStride + col;
 }
 
-// For v3 migration: find pad index that maps to a given scale step
+// For v3 migration: find pad index that maps to a given scale step (default sequential)
 function padForScaleStep(scaleStep) {
-  for (let p = 0; p < NUM_PADS; p++) if (padToScaleStep(p) === scaleStep) return p;
+  for (let p = 0; p < NUM_PADS; p++) if (padToScaleStep(p, 'sequential') === scaleStep) return p;
   return 0;
 }
 
@@ -716,7 +743,12 @@ function loadFromObject(saved) {
           if (typeof st.key === 'number') state.tracks[t].key = ((st.key % 12) + 12) % 12;
           if (st.scale && SCALES[st.scale]) state.tracks[t].scale = st.scale;
           if (typeof st.octave === 'number') state.tracks[t].octave = Math.max(0, Math.min(6, st.octave|0));
+          if (st.layout === 'sequential' || st.layout === 'fourths') state.tracks[t].layout = st.layout;
         }
+        if (typeof st.muted  === 'boolean') state.tracks[t].muted  = st.muted;
+        if (typeof st.solo   === 'boolean') state.tracks[t].solo   = st.solo;
+        if (typeof st.volume === 'number')  state.tracks[t].volume = Math.max(0, Math.min(1, st.volume));
+        if (typeof st.pan    === 'number')  state.tracks[t].pan    = Math.max(0, Math.min(1, st.pan));
       }
     }
     for (let t = 0; t < NUM_TRACKS; t++) {
@@ -874,6 +906,9 @@ function makeReverbIR(sizeNorm) {
   return buf;
 }
 
+let analyser = null;
+const VIZ_BARS = 24;
+
 function initAudio() {
   if (audioCtx) return;
   audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -881,6 +916,13 @@ function initAudio() {
   masterGain = audioCtx.createGain();
   masterGain.gain.value = 0.7;
   masterGain.connect(audioCtx.destination);
+
+  // FFT analyser tap (post-master) — feeds the modulation viz strip
+  analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 64;             // 32 frequency bins, smooth response
+  analyser.smoothingTimeConstant = 0.7;
+  masterGain.connect(analyser);      // tap, not in series with destination
+  startVizLoop();
 
   kitPanner = audioCtx.createStereoPanner ? audioCtx.createStereoPanner() : null;
   if (kitPanner) kitPanner.connect(masterGain);
@@ -981,20 +1023,66 @@ function applyKnobsToAudio() {
   kitDelayWet.gain.setTargetAtTime(k.kitDelTime > 0 ? 0.6 : 0, t, 0.02);
 }
 
+// Per-track gain + panner. Lazy — built the first time a sound from the
+// track is triggered. All padChains for the track converge into trackChain.input,
+// so trackChain.gain controls the track's volume / mute, and trackChain.panner
+// controls its pan. Kit reverb / delay sends are taken POST-track-gain so
+// muting a track also silences its reverb/delay tail.
+const trackChains = new Map();   // trackIdx -> {input, gain, panner}
+function getTrackChain(trackIdx) {
+  let c = trackChains.get(trackIdx);
+  if (c) return c;
+  if (!audioCtx) initAudio();
+  const tr = state.tracks[trackIdx];
+  const input  = audioCtx.createGain(); input.gain.value = 1;
+  const gain   = audioCtx.createGain(); gain.gain.value = effectiveMuted(trackIdx) ? 0 : tr.volume;
+  const panner = audioCtx.createStereoPanner ? audioCtx.createStereoPanner() : null;
+  input.connect(gain);
+  if (panner) {
+    panner.pan.value = (tr.pan - 0.5) * 2;
+    gain.connect(panner).connect(kitInput);
+  } else {
+    gain.connect(kitInput);
+  }
+  // Kit reverb / delay sends from the post-gain (post-mute) signal.
+  gain.connect(kitReverbInput);
+  gain.connect(kitDelayInput);
+  c = { input, gain, panner };
+  trackChains.set(trackIdx, c);
+  return c;
+}
+
+function effectiveMuted(trackIdx) {
+  const tr = state.tracks[trackIdx];
+  const anySolo = state.tracks.some(t => t.solo);
+  return anySolo ? !tr.solo : tr.muted;
+}
+
+function applyTrackMix(trackIdx) {
+  const c = trackChains.get(trackIdx);
+  if (!c || !audioCtx) return;
+  const tr = state.tracks[trackIdx];
+  const t = audioCtx.currentTime;
+  c.gain.gain.setTargetAtTime(effectiveMuted(trackIdx) ? 0 : tr.volume, t, 0.01);
+  if (c.panner) c.panner.pan.setTargetAtTime((tr.pan - 0.5) * 2, t, 0.01);
+}
+function applyAllTrackMix() { for (let t = 0; t < NUM_TRACKS; t++) applyTrackMix(t); }
+
 function createPadChain(trackIdx, padIdx, key) {
   if (!audioCtx) initAudio();
+  const trackChain = getTrackChain(trackIdx);
   const bus = audioCtx.createGain();
   bus.gain.value = 1;
-  bus.connect(kitInput);
-  bus.connect(kitReverbInput);
-  bus.connect(kitDelayInput);
+  bus.connect(trackChain.input);    // dry → track input → track gain → kit
 
   const fx = state.padFx[trackIdx][padIdx];
 
+  // Per-pad reverb / delay feed back into the track input so they pick up
+  // the track's gain / mute / pan too.
   const revIn = audioCtx.createGain(); revIn.gain.value = fx.padRevAmt;
   const rev   = audioCtx.createConvolver(); rev.buffer = makeReverbIR(fx.padRevSize); rev._size = fx.padRevSize;
   const revWet= audioCtx.createGain(); revWet.gain.value = 1;
-  bus.connect(revIn).connect(rev).connect(revWet).connect(kitInput);
+  bus.connect(revIn).connect(rev).connect(revWet).connect(trackChain.input);
 
   const dlyIn = audioCtx.createGain(); dlyIn.gain.value = fx.padDelAmt;
   const dly   = audioCtx.createDelay(2.0); dly.delayTime.value = delayTimeFromKnob(0.5);
@@ -1002,7 +1090,7 @@ function createPadChain(trackIdx, padIdx, key) {
   const dlyWet= audioCtx.createGain(); dlyWet.gain.value = 1;
   bus.connect(dlyIn).connect(dly);
   dly.connect(dlyFb).connect(dly);
-  dly.connect(dlyWet).connect(kitInput);
+  dly.connect(dlyWet).connect(trackChain.input);
 
   const chain = { bus, revIn, rev, revWet, dlyIn, dly, dlyFb, dlyWet };
   padChains.set(key, chain);
@@ -1058,7 +1146,7 @@ function setTrackParam(trackIdx, knob, v) {
 }
 
 function padFreq(track, padIdx) {
-  const step  = padToScaleStep(padIdx);
+  const step  = padToScaleStep(padIdx, track.layout);
   const scale = SCALES[track.scale];
   const oct   = Math.floor(step / scale.length);
   const deg   = scale[step % scale.length];
@@ -1067,7 +1155,7 @@ function padFreq(track, padIdx) {
 }
 function padLabel(track, padIdx) {
   if (track.type === 'drums') return DRUM_KIT[padIdx].n;
-  const step  = padToScaleStep(padIdx);
+  const step  = padToScaleStep(padIdx, track.layout);
   const scale = SCALES[track.scale];
   const oct   = Math.floor(step / scale.length) + track.octave;
   const noteIdx = (track.key + scale[step % scale.length]) % 12;
@@ -1075,7 +1163,7 @@ function padLabel(track, padIdx) {
 }
 function isPadRoot(track, padIdx) {
   if (track.type === 'drums') return false;
-  const step = padToScaleStep(padIdx);
+  const step = padToScaleStep(padIdx, track.layout);
   return step % SCALES[track.scale].length === 0;
 }
 
@@ -1950,6 +2038,38 @@ function rebuildVelocityStrip(){
 rebuildVelocityStrip();
 
 /* ============================================================
+   MODULATION VIZ STRIP — real-time spectrum bars from masterGain
+============================================================ */
+const vizEl = document.getElementById('viz');
+const vizBars = [];
+for (let i = 0; i < VIZ_BARS; i++) {
+  const b = document.createElement('div');
+  b.className = 'viz-bar';
+  vizEl.appendChild(b);
+  vizBars.push(b);
+}
+let vizFftData = null;
+let vizRafId = null;
+function startVizLoop() {
+  if (!analyser || vizRafId) return;
+  vizFftData = new Uint8Array(analyser.frequencyBinCount);
+  const tick = () => {
+    analyser.getByteFrequencyData(vizFftData);
+    // Map FFT bins to bars (32 bins → 24 bars: skip the very top bins which are mostly inaudible).
+    const bins = vizFftData.length;
+    const usable = Math.floor(bins * 0.78);
+    for (let i = 0; i < VIZ_BARS; i++) {
+      const idx = Math.floor(i / VIZ_BARS * usable);
+      const v = vizFftData[idx] / 255;
+      vizBars[i].style.height = (v * 100) + '%';
+      vizBars[i].style.opacity = 0.25 + v * 0.55;
+    }
+    vizRafId = requestAnimationFrame(tick);
+  };
+  vizRafId = requestAnimationFrame(tick);
+}
+
+/* ============================================================
    TABS
 ============================================================ */
 document.querySelectorAll('.tab').forEach(t => {
@@ -1976,13 +2096,30 @@ document.querySelectorAll('.tab').forEach(t => {
    TRACK STRIP
 ============================================================ */
 function updateTrackUI() {
+  const anySolo = state.tracks.some(t => t.solo);
   document.querySelectorAll('.track').forEach(el => {
     const idx = +el.dataset.track;
+    const tr = state.tracks[idx];
     el.classList.toggle('active', idx === state.trackIdx);
-    el.textContent = state.tracks[idx].name;
+    el.classList.toggle('muted', anySolo ? !tr.solo : tr.muted);
+    el.classList.toggle('solo',  tr.solo);
+    el.textContent = tr.name;
   });
 }
 updateTrackUI();
+
+function switchToTrack(idx) {
+  state.trackIdx = idx;
+  state.sceneIdx = state.trackPlayScene[idx];
+  state.selectedPad = 0;
+  updateTrackUI();
+  updateChipRow();
+  buildKnobs();
+  applyMode();
+  rebuildVelocityStrip();
+  updateSelectedSound();
+  saveState();
+}
 
 document.querySelectorAll('.track').forEach(el => {
   let pressTimer = null;
@@ -1992,6 +2129,8 @@ document.querySelectorAll('.track').forEach(el => {
     pressTimer = setTimeout(() => {
       longHandled = true;
       const idx = +el.dataset.track;
+      // Switch to the track too — settings changes should reflect in the live view.
+      if (idx !== state.trackIdx) switchToTrack(idx);
       openTrackSettings(idx);
       if (window.navigator.vibrate) window.navigator.vibrate(15);
     }, LONG_PRESS_MS);
@@ -1999,17 +2138,7 @@ document.querySelectorAll('.track').forEach(el => {
   el.addEventListener('pointerup', () => {
     if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
     if (longHandled) return;
-    const idx = +el.dataset.track;
-    state.trackIdx = idx;
-    state.sceneIdx = state.trackPlayScene[idx];
-    state.selectedPad = 0;
-    updateTrackUI();
-    updateChipRow();
-    buildKnobs();
-    applyMode();
-    rebuildVelocityStrip();
-    updateSelectedSound();
-    saveState();
+    switchToTrack(+el.dataset.track);
     maybeShowHint();
   });
   el.addEventListener('pointercancel', () => {
@@ -2030,7 +2159,8 @@ function updateChipRow() {
     chipRow.classList.remove('hidden');
     const preset = PRESET_BY_ID.get(tr.presetId);
     presetChip.textContent = preset ? preset.n : '—';
-    scaleChip.textContent = `${KEYS[tr.key].toLowerCase()} · ${tr.scale} · oct ${tr.octave}`;
+    const layoutTag = (tr.layout === 'fourths') ? ' · 4ths' : '';
+    scaleChip.textContent = `${KEYS[tr.key].toLowerCase()} · ${tr.scale} · oct ${tr.octave}${layoutTag}`;
   } else {
     chipRow.classList.add('hidden');
   }
@@ -2147,6 +2277,7 @@ function applyPendingScenesIfWrap(step) {
 function scheduleStep(step, time) {
   applyPendingScenesIfWrap(step);
   for (let t = 0; t < NUM_TRACKS; t++) {
+    if (effectiveMuted(t)) continue;
     const scenePat = state.patterns[t][state.trackPlayScene[t]];
     for (let p = 0; p < NUM_PADS; p++) {
       const v = scenePat[p][step];
@@ -2462,6 +2593,42 @@ function openTrackSettings(idx) {
   drawerBackdrop.classList.add('open');
 }
 
+function makeChipGrid(label, options, isActive, onPick) {
+  const sec = document.createElement('div');
+  sec.className = 'ts-section';
+  sec.innerHTML = `<div class="ts-label">${label}</div><div class="chip-grid"></div>`;
+  const grid = sec.querySelector('.chip-grid');
+  options.forEach((opt, i) => {
+    const c = document.createElement('div');
+    c.className = 'chip' + (isActive(opt, i) ? ' active' : '');
+    c.textContent = typeof opt === 'string' ? opt : opt.label;
+    c.addEventListener('pointerdown', () => {
+      onPick(opt, i);
+      grid.querySelectorAll('.chip').forEach((x, xi) => x.classList.toggle('active', isActive(options[xi], xi)));
+    });
+    grid.appendChild(c);
+  });
+  return sec;
+}
+
+function makeSliderRow(label, value, onChange, displayFn) {
+  const sec = document.createElement('div');
+  sec.className = 'ts-section';
+  sec.innerHTML = `<div class="ts-label"></div>
+    <div class="slider-row">
+      <input type="range" min="0" max="1" step="0.01" />
+      <div class="slider-val"></div>
+    </div>`;
+  const lab = sec.querySelector('.ts-label');
+  const inp = sec.querySelector('input');
+  const val = sec.querySelector('.slider-val');
+  function refresh() { lab.textContent = label; val.textContent = displayFn(parseFloat(inp.value)); }
+  inp.value = value;
+  refresh();
+  inp.addEventListener('input', () => { onChange(parseFloat(inp.value)); refresh(); });
+  return sec;
+}
+
 function renderTrackSettings(idx) {
   const tr = state.tracks[idx];
   tsBody.innerHTML = '';
@@ -2481,49 +2648,56 @@ function renderTrackSettings(idx) {
   });
   tsBody.appendChild(nameSec);
 
+  // Mute / Solo (all track types)
+  const msSec = document.createElement('div');
+  msSec.className = 'ts-section';
+  msSec.innerHTML = `<div class="ts-label">mix</div>
+    <div class="chip-grid">
+      <div class="chip ms-mute${tr.muted?' active':''}">mute</div>
+      <div class="chip ms-solo${tr.solo?' active':''}">solo</div>
+    </div>`;
+  const muteBtn = msSec.querySelector('.ms-mute');
+  const soloBtn = msSec.querySelector('.ms-solo');
+  muteBtn.addEventListener('pointerdown', () => {
+    tr.muted = !tr.muted;
+    muteBtn.classList.toggle('active', tr.muted);
+    applyAllTrackMix();
+    updateTrackUI();
+    saveState();
+  });
+  soloBtn.addEventListener('pointerdown', () => {
+    tr.solo = !tr.solo;
+    soloBtn.classList.toggle('active', tr.solo);
+    applyAllTrackMix();
+    updateTrackUI();
+    saveState();
+  });
+  tsBody.appendChild(msSec);
+
+  // Volume + Pan
+  tsBody.appendChild(makeSliderRow('volume', tr.volume,
+    v => { tr.volume = v; applyTrackMix(idx); saveState(); },
+    v => Math.round(v * 100) + ''));
+  tsBody.appendChild(makeSliderRow('pan', tr.pan,
+    v => { tr.pan = v; applyTrackMix(idx); saveState(); },
+    v => { const p = Math.round((v - 0.5) * 100); return p === 0 ? 'c' : (p < 0 ? 'l' + Math.abs(p) : 'r' + p); }));
+
   if (tr.type !== 'melodic') return;
 
   // Key
-  const keySec = document.createElement('div');
-  keySec.className = 'ts-section';
-  keySec.innerHTML = `<div class="ts-label">key</div><div class="chip-grid"></div>`;
-  const keyGrid = keySec.querySelector('.chip-grid');
-  KEYS.forEach((k, i) => {
-    const c = document.createElement('div');
-    c.className = 'chip' + (i === tr.key ? ' active' : '');
-    c.textContent = k;
-    c.addEventListener('pointerdown', () => {
-      tr.key = i;
-      keyGrid.querySelectorAll('.chip').forEach((x, xi) => x.classList.toggle('active', xi === i));
-      applyMode();
-      updateChipRow();
-      updateSelectedSound();
-      saveState();
-    });
-    keyGrid.appendChild(c);
-  });
-  tsBody.appendChild(keySec);
+  tsBody.appendChild(makeChipGrid('key', KEYS,
+    (k, i) => i === tr.key,
+    (_k, i) => { tr.key = i; applyMode(); updateChipRow(); updateSelectedSound(); saveState(); }));
 
   // Scale
-  const scaleSec = document.createElement('div');
-  scaleSec.className = 'ts-section';
-  scaleSec.innerHTML = `<div class="ts-label">scale</div><div class="chip-grid"></div>`;
-  const scaleGrid = scaleSec.querySelector('.chip-grid');
-  SCALE_NAMES.forEach(name => {
-    const c = document.createElement('div');
-    c.className = 'chip' + (name === tr.scale ? ' active' : '');
-    c.textContent = name;
-    c.addEventListener('pointerdown', () => {
-      tr.scale = name;
-      scaleGrid.querySelectorAll('.chip').forEach(x => x.classList.toggle('active', x.textContent === name));
-      applyMode();
-      updateChipRow();
-      updateSelectedSound();
-      saveState();
-    });
-    scaleGrid.appendChild(c);
-  });
-  tsBody.appendChild(scaleSec);
+  tsBody.appendChild(makeChipGrid('scale', SCALE_NAMES,
+    (name) => name === tr.scale,
+    (name) => { tr.scale = name; applyMode(); updateChipRow(); updateSelectedSound(); saveState(); }));
+
+  // Layout (sequential / fourths)
+  tsBody.appendChild(makeChipGrid('layout', ['sequential', 'fourths'],
+    (name) => (tr.layout || 'sequential') === name,
+    (name) => { tr.layout = name; applyMode(); updateChipRow(); updateSelectedSound(); saveState(); }));
 
   // Octave
   const octSec = document.createElement('div');
