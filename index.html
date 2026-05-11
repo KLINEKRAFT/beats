@@ -126,15 +126,15 @@
   }
 
   /* ---- Knobs ---- */
-  .knobs { padding: 14px 16px 12px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px 8px; flex-shrink: 0; }
+  .knobs { padding: 14px 16px 10px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px 6px; flex-shrink: 0; }
   .knob-cell { display: flex; flex-direction: column; align-items: center; gap: 6px; position: relative; }
-  .knob-label { font-size: 9px; letter-spacing: 0.12em; text-transform: lowercase; color: var(--ink-soft); }
-  .knob { width: 60px; height: 60px; position: relative; touch-action: none; cursor: ns-resize; }
+  .knob-label { font-size: 10px; letter-spacing: 0.12em; text-transform: lowercase; color: var(--ink-soft); }
+  .knob { width: 80px; height: 80px; position: relative; touch-action: none; cursor: ns-resize; }
   .knob svg { width: 100%; height: 100%; display: block; pointer-events: none; }
-  .knob .track-arc { fill: none; stroke: var(--bone-deep); stroke-width: 2.4; }
-  .knob .arc { fill: none; stroke: var(--accent); stroke-width: 2.4; }
-  .knob .tick { stroke: var(--ink); stroke-width: 1.6; }
-  .knob-value { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 10px; color: var(--ink); opacity: 0; pointer-events: none; font-variant-numeric: tabular-nums; transition: opacity 0.18s ease; }
+  .knob .track-arc { fill: none; stroke: var(--bone-deep); stroke-width: 3; }
+  .knob .arc { fill: none; stroke: var(--accent); stroke-width: 3; }
+  .knob .tick { stroke: var(--ink); stroke-width: 2; stroke-linecap: round; }
+  .knob-value { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 12px; color: var(--ink); opacity: 0; pointer-events: none; font-variant-numeric: tabular-nums; transition: opacity 0.18s ease; }
   .knob.editing .knob-value { opacity: 1; }
   .knob.editing { cursor: grabbing; }
 
@@ -145,6 +145,12 @@
 
   /* ---- Pads ---- */
   .pads { flex: 1; padding: 4px 16px 8px; display: grid; grid-template-columns: repeat(4, 1fr); grid-template-rows: repeat(4, 1fr); gap: 6px; min-height: 240px; }
+  .pads.piano-view { grid-template-columns: repeat(8, 1fr); grid-template-rows: repeat(2, 1fr); gap: 4px; }
+  .pads.piano-view .pad { padding: 4px; border-radius: 2px; }
+  .pads.piano-view .pad-label { font-size: 7px; }
+  .pads.piano-view .pad.is-root { background: var(--pad-pressed); }
+  .pads.piano-view .pad.is-root .pad-label { color: var(--ink); }
+  .pads.piano-view .pad .root-dot { display: none; }
   .pad {
     background: var(--pad); border-radius: 3px; position: relative; cursor: pointer;
     transition: background 0.06s ease, transform 0.06s ease;
@@ -153,7 +159,6 @@
     touch-action: none;
     overflow: hidden;
   }
-  .pad.flash { background: var(--accent); transform: scale(0.985); }
   .pad.selected {
     background: var(--pad);
     box-shadow:
@@ -163,7 +168,6 @@
   }
   .pad.empty { opacity: 0.45; cursor: default; }
   .pad-label { font-size: 8px; letter-spacing: 0.08em; text-transform: lowercase; color: var(--ink-soft); pointer-events: none; }
-  .pad.flash .pad-label { color: rgba(255,255,255,0.9); }
   .pad .step-dot { position: absolute; bottom: 6px; right: 6px; width: 6px; height: 6px; background: var(--accent); opacity: 0; transition: opacity 0.1s ease; }
   .pad.has-step .step-dot { opacity: 1; }
   .pad .root-dot {
@@ -197,6 +201,14 @@
   @keyframes queuePulse { 0%,100% { opacity: 1; } 50% { opacity: 0.55; } }
   .pad.scene-mode.scene-focus { box-shadow: inset 0 0 0 1.5px var(--accent); }
 
+  /* Press feedback — !important so it beats every per-mode rule above
+     (including .pads.piano-view .pad.is-root which has higher specificity). */
+  .pad.flash {
+    background: var(--accent) !important;
+    transform: scale(0.985);
+  }
+  .pad.flash .pad-label, .pad.flash .step-num { color: rgba(255,255,255,0.95) !important; }
+
   .vel-slider {
     position: absolute; left: 6px; right: 6px; bottom: 6px;
     background: rgba(255,255,255,0.85);
@@ -212,6 +224,10 @@
   .ctrl svg { width: 18px; height: 18px; stroke: var(--ink-soft); fill: none; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
   .ctrl.play svg { fill: var(--ink-soft); stroke: var(--ink-soft); }
   .ctrl.play.playing svg { fill: var(--accent); stroke: var(--accent); }
+  .ctrl.rec svg { fill: var(--ink-soft); stroke: var(--ink-soft); }
+  .ctrl.rec.armed svg { fill: var(--accent); stroke: var(--accent); animation: recPulse 1.4s ease-in-out infinite; }
+  @keyframes recPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+  .playhead.recording { background: var(--accent); opacity: 0.9; width: 2px; }
 
   .footer-row { display: flex; align-items: center; justify-content: space-between; padding: 6px 16px 10px; }
   .selected-sound { font-size: 9px; letter-spacing: 0.16em; text-transform: lowercase; color: var(--ink-soft); font-variant-numeric: tabular-nums; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -472,7 +488,7 @@
     <div class="ctrl"><svg viewBox="0 0 24 24"><path d="M15 14 L20 14 L20 9"/><path d="M20 14 C20 8 16 5 12 5 C8 5 4 8 4 13"/></svg></div>
     <div class="ctrl" id="clearBtn"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="12" height="12" rx="1"/><rect x="8" y="8" width="12" height="12" rx="1"/></svg></div>
     <div class="ctrl"><svg viewBox="0 0 24 24"><line x1="4" y1="4" x2="20" y2="4"/><line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="14" x2="20" y2="14"/><line x1="4" y1="19" x2="20" y2="19"/></svg></div>
-    <div class="ctrl"></div>
+    <div class="ctrl rec" id="recBtn"><svg viewBox="0 0 24 24" stroke-width="0"><circle cx="12" cy="12" r="6"/></svg></div>
     <div class="ctrl play" id="playBtn"><svg id="playIcon" viewBox="0 0 24 24"><path d="M7 5 L19 12 L7 19 Z"/></svg></div>
   </div>
 
@@ -634,10 +650,10 @@ const state = {
   sceneIdx: 0,
   selectedPad: 0,
   tracks: [
-    {name:'drums', type:'drums',                                                                                       muted:false, solo:false, volume:1.0, pan:0.5},
-    {name:'bass',  type:'melodic', presetId:'long808',   key:0, scale:'minor pent', octave:1, layout:'sequential', muted:false, solo:false, volume:1.0, pan:0.5},
-    {name:'keys',  type:'melodic', presetId:'pureSine',  key:0, scale:'major',      octave:3, layout:'sequential', muted:false, solo:false, volume:1.0, pan:0.5},
-    {name:'lead',  type:'melodic', presetId:'retroLead', key:0, scale:'minor pent', octave:4, layout:'sequential', muted:false, solo:false, volume:1.0, pan:0.5},
+    {name:'drums', type:'drums',                                                                                                  muted:false, solo:false, volume:1.0, pan:0.5},
+    {name:'bass',  type:'melodic', presetId:'long808',   key:0, scale:'minor pent', octave:1, layout:'sequential', view:'grid', muted:false, solo:false, volume:1.0, pan:0.5},
+    {name:'keys',  type:'melodic', presetId:'pureSine',  key:0, scale:'major',      octave:3, layout:'sequential', view:'grid', muted:false, solo:false, volume:1.0, pan:0.5},
+    {name:'lead',  type:'melodic', presetId:'retroLead', key:0, scale:'minor pent', octave:4, layout:'sequential', view:'grid', muted:false, solo:false, volume:1.0, pan:0.5},
   ],
   patterns: Array.from({length: NUM_TRACKS}, () =>
     Array.from({length: NUM_SCENES}, () =>
@@ -653,6 +669,7 @@ const state = {
   ),
   mode: 'pads',
   playing: false,
+  recording: false,
   currentStep: 0,
   scenesFocus: { track: 0, scene: 0 },
   hintsSeen: { pads:false, seq:false, tracks:false, melodic:false, scenes:false, presets:false },
@@ -696,20 +713,29 @@ function copySteps(dst, src) {
   }
 }
 
-// Map a 4×4 pad index to a scale step.
-//   sequential: each row up adds 4 scale steps   (cols are consecutive notes)
-//   fourths:    each row up adds 3 scale steps   (Note/Push 4ths — chord shapes)
-function padToScaleStep(padIdx, layout) {
-  const rowFromTop = Math.floor(padIdx / 4);
-  const col        = padIdx % 4;
-  const rowFromBot = 3 - rowFromTop;
-  const rowStride  = (layout === 'fourths') ? 3 : 4;
+// Pad-grid dimensions per track view.
+//   grid  (default) — 4×4
+//   piano           — 2×8 (tall narrow keys, like Note's piano roll)
+function padDims(track) {
+  if (track && track.type === 'melodic' && track.view === 'piano') return { rows: 2, cols: 8 };
+  return { rows: 4, cols: 4 };
+}
+
+// Map a pad index to a scale step. Bottom-left = root (Note/Push convention).
+//   sequential: each row up adds `cols` scale steps
+//   fourths:    each row up adds `cols-1` scale steps  (overlapping rows = chord shapes)
+function padToScaleStep(padIdx, layout, track) {
+  const { rows, cols } = padDims(track);
+  const rowFromTop = Math.floor(padIdx / cols);
+  const col        = padIdx % cols;
+  const rowFromBot = (rows - 1) - rowFromTop;
+  const rowStride  = (layout === 'fourths') ? Math.max(1, cols - 1) : cols;
   return rowFromBot * rowStride + col;
 }
 
-// For v3 migration: find pad index that maps to a given scale step (default sequential)
+// For v3 migration: find pad index that maps to a given scale step (default 4×4 sequential)
 function padForScaleStep(scaleStep) {
-  for (let p = 0; p < NUM_PADS; p++) if (padToScaleStep(p, 'sequential') === scaleStep) return p;
+  for (let p = 0; p < NUM_PADS; p++) if (padToScaleStep(p, 'sequential', null) === scaleStep) return p;
   return 0;
 }
 
@@ -744,6 +770,7 @@ function loadFromObject(saved) {
           if (st.scale && SCALES[st.scale]) state.tracks[t].scale = st.scale;
           if (typeof st.octave === 'number') state.tracks[t].octave = Math.max(0, Math.min(6, st.octave|0));
           if (st.layout === 'sequential' || st.layout === 'fourths') state.tracks[t].layout = st.layout;
+          if (st.view === 'grid' || st.view === 'piano') state.tracks[t].view = st.view;
         }
         if (typeof st.muted  === 'boolean') state.tracks[t].muted  = st.muted;
         if (typeof st.solo   === 'boolean') state.tracks[t].solo   = st.solo;
@@ -1146,7 +1173,7 @@ function setTrackParam(trackIdx, knob, v) {
 }
 
 function padFreq(track, padIdx) {
-  const step  = padToScaleStep(padIdx, track.layout);
+  const step  = padToScaleStep(padIdx, track.layout, track);
   const scale = SCALES[track.scale];
   const oct   = Math.floor(step / scale.length);
   const deg   = scale[step % scale.length];
@@ -1155,7 +1182,7 @@ function padFreq(track, padIdx) {
 }
 function padLabel(track, padIdx) {
   if (track.type === 'drums') return DRUM_KIT[padIdx].n;
-  const step  = padToScaleStep(padIdx, track.layout);
+  const step  = padToScaleStep(padIdx, track.layout, track);
   const scale = SCALES[track.scale];
   const oct   = Math.floor(step / scale.length) + track.octave;
   const noteIdx = (track.key + scale[step % scale.length]) % 12;
@@ -1163,7 +1190,7 @@ function padLabel(track, padIdx) {
 }
 function isPadRoot(track, padIdx) {
   if (track.type === 'drums') return false;
-  const step = padToScaleStep(padIdx, track.layout);
+  const step = padToScaleStep(padIdx, track.layout, track);
   return step % SCALES[track.scale].length === 0;
 }
 
@@ -1697,11 +1724,11 @@ function buildKnobs() {
 
 function renderKnob(el){
   const v = clamp(parseFloat(el.dataset.value), 0, 1);
-  const cx = 30, cy = 30, r = 24;
+  const cx = 40, cy = 40, r = 32;
   const startA = -135 * Math.PI / 180, endA = 135 * Math.PI / 180;
   const valA = startA + (endA - startA) * v;
-  const tx1 = cx + Math.cos(valA)*(r-9), ty1 = cy + Math.sin(valA)*(r-9);
-  const tx2 = cx + Math.cos(valA)*(r-2), ty2 = cy + Math.sin(valA)*(r-2);
+  const tx1 = cx + Math.cos(valA)*(r-12), ty1 = cy + Math.sin(valA)*(r-12);
+  const tx2 = cx + Math.cos(valA)*(r-2),  ty2 = cy + Math.sin(valA)*(r-2);
   const def = el._def || {};
   let display;
   const param = def.param || '';
@@ -1716,7 +1743,7 @@ function renderKnob(el){
   }
   else if (voiceKnob === 'detune') { const c = Math.round((v-0.5)*30); display = (c>0?'+':'')+c; }
   else { display = Math.round(v*100); }
-  el.innerHTML = `<svg viewBox="0 0 60 60"><path class="track-arc" d="${arcPath(cx,cy,r,startA,endA)}"/><path class="arc" d="${arcPath(cx,cy,r,startA,valA)}"/><line class="tick" x1="${tx1}" y1="${ty1}" x2="${tx2}" y2="${ty2}"/></svg><div class="knob-value">${display}</div>`;
+  el.innerHTML = `<svg viewBox="0 0 80 80"><path class="track-arc" d="${arcPath(cx,cy,r,startA,endA)}"/><path class="arc" d="${arcPath(cx,cy,r,startA,valA)}"/><line class="tick" x1="${tx1}" y1="${ty1}" x2="${tx2}" y2="${ty2}"/></svg><div class="knob-value">${display}</div>`;
 }
 
 function setupKnob(el){
@@ -1808,12 +1835,38 @@ function attachPadHandlers(i, pad) {
   let velAtPress = 0;
   let didMoveSignificant = false;
   let sceneLongHandled = false;
+  let pressedAt = 0;
+  let releaseTimer = null;
+  const FLASH_MIN_MS = 90;
+
+  function pressFlash() {
+    pad.classList.add('flash');
+    pressedAt = performance.now();
+    if (releaseTimer) { clearTimeout(releaseTimer); releaseTimer = null; }
+  }
+  function releaseFlash(immediate) {
+    if (immediate) {
+      pad.classList.remove('flash');
+      if (releaseTimer) { clearTimeout(releaseTimer); releaseTimer = null; }
+      return;
+    }
+    if (releaseTimer) return;
+    const elapsed = performance.now() - pressedAt;
+    const remaining = Math.max(0, FLASH_MIN_MS - elapsed);
+    releaseTimer = setTimeout(() => {
+      pad.classList.remove('flash');
+      releaseTimer = null;
+    }, remaining);
+  }
 
   pad.addEventListener('pointerdown', (e) => {
-    pad.setPointerCapture(e.pointerId);
+    try { pad.setPointerCapture(e.pointerId); } catch(_){}
     pointerStartY = e.clientY;
     didMoveSignificant = false;
     ensureAudio();
+
+    // Universal press feedback: pad turns orange the instant you touch it.
+    pressFlash();
 
     if (state.mode === 'scenes') {
       sceneLongHandled = false;
@@ -1849,17 +1902,22 @@ function attachPadHandlers(i, pad) {
         pressTimer = setTimeout(() => {
           editingVel = true;
           pad.classList.add('editing-vel');
+          // While dragging vel, drop the press flash so the slider is visible.
+          releaseFlash(true);
           if (window.navigator.vibrate) window.navigator.vibrate(15);
           updateVelSliderDisplay(pad, activeScenePat()[state.selectedPad][i]);
         }, LONG_PRESS_MS);
       }
     } else {
       // pads / padfx / kitfx
-      pad.classList.add('flash');
-      setTimeout(() => pad.classList.remove('flash'), 90);
       if (window.navigator.vibrate) window.navigator.vibrate(8);
       state.selectedPad = i;
       playSound(state.trackIdx, i);
+      // Live record: overdub this hit at the current step (16th-quantized).
+      if (state.recording && state.playing && state.mode === 'pads') {
+        activeScenePat()[i][state.currentStep] = 100;
+        rebuildVelocityStrip();
+      }
       applyMode();
       if (state.mode === 'padfx') buildKnobs();
       updateSelectedSound();
@@ -1882,6 +1940,7 @@ function attachPadHandlers(i, pad) {
   pad.addEventListener('pointerup', (e) => {
     try { pad.releasePointerCapture(e.pointerId); } catch(_){}
     if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
+    releaseFlash();
 
     if (state.mode === 'scenes') {
       if (sceneLongHandled) return;
@@ -1894,8 +1953,6 @@ function attachPadHandlers(i, pad) {
       }
       state.scenesFocus = { track: trCol, scene: sceneRow };
       if (trCol === state.trackIdx) state.sceneIdx = sceneRow;
-      pad.classList.add('flash');
-      setTimeout(() => pad.classList.remove('flash'), 90);
       if (window.navigator.vibrate) window.navigator.vibrate(6);
       updateChipRow();
       updateSelectedSound();
@@ -1928,8 +1985,6 @@ function attachPadHandlers(i, pad) {
       }
       lastTapAt = now;
 
-      pad.classList.add('flash');
-      setTimeout(() => pad.classList.remove('flash'), 90);
       if (window.navigator.vibrate) window.navigator.vibrate(8);
 
       if (stepCurrent > 0) {
@@ -1946,6 +2001,7 @@ function attachPadHandlers(i, pad) {
 
   pad.addEventListener('pointercancel', () => {
     if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
+    releaseFlash(true);
     if (editingVel) {
       editingVel = false;
       pad.classList.remove('editing-vel');
@@ -1963,6 +2019,10 @@ function updateVelSliderDisplay(pad, vel) {
 
 function applyMode(){
   const tr = state.tracks[state.trackIdx];
+  // Piano view only applies to melodic tracks in pads/padfx/kitfx modes (not seq/scenes).
+  const isPiano = (tr.type === 'melodic' && tr.view === 'piano' &&
+                   (state.mode === 'pads' || state.mode === 'padfx' || state.mode === 'kitfx'));
+  padsEl.classList.toggle('piano-view', isPiano);
   pads.forEach((pad, i) => {
     pad.classList.remove('step-mode','step-on','step-current','has-step','selected','empty','editing-vel',
       'scene-mode','scene-empty','scene-has','scene-playing','scene-queued','scene-focus','is-root');
@@ -2371,6 +2431,18 @@ playBtn.addEventListener('pointerdown', () => {
   if (state.playing) stopLoop(); else startLoop();
 });
 
+const recBtn = document.getElementById('recBtn');
+function setRecording(on) {
+  state.recording = on;
+  recBtn.classList.toggle('armed', on);
+  playhead.classList.toggle('recording', on);
+}
+recBtn.addEventListener('pointerdown', () => {
+  setRecording(!state.recording);
+  if (state.recording && !state.playing) startLoop();   // arming auto-starts playback
+  if (window.navigator.vibrate) window.navigator.vibrate(8);
+});
+
 const bpmEl = document.getElementById('bpmDisplay');
 bpmEl.textContent = state.bpm + ' bpm';
 bpmEl.addEventListener('pointerdown', () => {
@@ -2698,6 +2770,11 @@ function renderTrackSettings(idx) {
   tsBody.appendChild(makeChipGrid('layout', ['sequential', 'fourths'],
     (name) => (tr.layout || 'sequential') === name,
     (name) => { tr.layout = name; applyMode(); updateChipRow(); updateSelectedSound(); saveState(); }));
+
+  // Pad view (grid / piano)
+  tsBody.appendChild(makeChipGrid('pad view', ['grid', 'piano'],
+    (name) => (tr.view || 'grid') === name,
+    (name) => { tr.view = name; applyMode(); updateSelectedSound(); saveState(); }));
 
   // Octave
   const octSec = document.createElement('div');
