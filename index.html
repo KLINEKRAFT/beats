@@ -109,15 +109,23 @@
   /* ---- Preset / scale chip row ---- */
   .chip-row {
     display: flex; align-items: center; justify-content: space-between;
-    padding: 8px 16px 0; flex-shrink: 0; min-height: 22px;
+    padding: 8px 16px 0; flex-shrink: 0; min-height: 22px; gap: 8px;
   }
   .chip-row.hidden { display: none; }
+  .chip-row-right { display: flex; align-items: center; gap: 6px; }
   .preset-chip {
     font-size: 11px; letter-spacing: 0.04em;
     color: var(--accent); cursor: pointer;
     padding: 2px 6px;
     text-transform: none;
   }
+  .view-chip {
+    font-size: 9px; letter-spacing: 0.12em; color: var(--ink-soft);
+    cursor: pointer; text-transform: lowercase;
+    padding: 2px 6px;
+    border: 1px solid var(--hairline); border-radius: 2px;
+  }
+  .view-chip.piano { color: var(--accent); border-color: var(--accent); }
   .scale-chip {
     font-size: 9px; letter-spacing: 0.10em; color: var(--ink-soft);
     cursor: pointer; text-transform: lowercase;
@@ -472,7 +480,10 @@
 
   <div class="chip-row hidden" id="chipRow">
     <div class="preset-chip" id="presetChip">—</div>
-    <div class="scale-chip" id="scaleChip">—</div>
+    <div class="chip-row-right">
+      <div class="scale-chip" id="scaleChip">—</div>
+      <div class="view-chip" id="viewChip">grid</div>
+    </div>
   </div>
 
   <div class="knobs" id="knobs"></div>
@@ -1827,6 +1838,22 @@ function activeScenePat() {
   return state.patterns[state.trackIdx][state.sceneIdx];
 }
 
+// Tap-pad action shared by initial press and drag-glide.
+// Returns true if the tap actually happened (i.e. mode supports it).
+function tapPadInPadsMode(i) {
+  if (!(state.mode === 'pads' || state.mode === 'padfx' || state.mode === 'kitfx')) return false;
+  state.selectedPad = i;
+  playSound(state.trackIdx, i);
+  if (state.recording && state.playing && state.mode === 'pads') {
+    activeScenePat()[i][state.currentStep] = 100;
+    rebuildVelocityStrip();
+  }
+  applyMode();
+  if (state.mode === 'padfx') buildKnobs();
+  updateSelectedSound();
+  return true;
+}
+
 function attachPadHandlers(i, pad) {
   let pressTimer = null;
   let editingVel = false;
@@ -1837,6 +1864,7 @@ function attachPadHandlers(i, pad) {
   let sceneLongHandled = false;
   let pressedAt = 0;
   let releaseTimer = null;
+  let glideLastIdx = -1;   // last pad index touched in a drag-glide (pads/padfx/kitfx)
   const FLASH_MIN_MS = 90;
 
   function pressFlash() {
@@ -1911,29 +1939,44 @@ function attachPadHandlers(i, pad) {
     } else {
       // pads / padfx / kitfx
       if (window.navigator.vibrate) window.navigator.vibrate(8);
-      state.selectedPad = i;
-      playSound(state.trackIdx, i);
-      // Live record: overdub this hit at the current step (16th-quantized).
-      if (state.recording && state.playing && state.mode === 'pads') {
-        activeScenePat()[i][state.currentStep] = 100;
-        rebuildVelocityStrip();
-      }
-      applyMode();
-      if (state.mode === 'padfx') buildKnobs();
-      updateSelectedSound();
+      tapPadInPadsMode(i);
+      glideLastIdx = i;
       saveState();
     }
   });
 
   pad.addEventListener('pointermove', (e) => {
-    if (state.mode !== 'seq') return;
-    const dy = e.clientY - pointerStartY;
-    if (Math.abs(dy) > 4) didMoveSignificant = true;
-    if (editingVel) {
-      const newVel = clamp(Math.round(velAtPress + (-dy / 100) * 127), 1, 127);
-      activeScenePat()[state.selectedPad][i] = newVel;
-      updateVelSliderDisplay(pad, newVel);
-      rebuildVelocityStrip();
+    if (state.mode === 'seq') {
+      const dy = e.clientY - pointerStartY;
+      if (Math.abs(dy) > 4) didMoveSignificant = true;
+      if (editingVel) {
+        const newVel = clamp(Math.round(velAtPress + (-dy / 100) * 127), 1, 127);
+        activeScenePat()[state.selectedPad][i] = newVel;
+        updateVelSliderDisplay(pad, newVel);
+        rebuildVelocityStrip();
+      }
+      return;
+    }
+    // Drag-to-play across pads (pads / padfx / kitfx, incl piano view).
+    // Pointer capture keeps move events on the originating pad — use
+    // elementFromPoint to find the pad currently under the finger.
+    if (state.mode === 'pads' || state.mode === 'padfx' || state.mode === 'kitfx') {
+      const elem = document.elementFromPoint(e.clientX, e.clientY);
+      const hoveredPad = elem && elem.closest ? elem.closest('.pad') : null;
+      if (!hoveredPad) return;
+      const hoveredIdx = parseInt(hoveredPad.dataset.index, 10);
+      if (hoveredIdx === glideLastIdx) return;
+      // Clear the press flash on the previous glide pad. The originally-pressed
+      // pad has its own pressFlash/releaseFlash lifecycle; for glide intermediates
+      // we just toggle the class directly.
+      if (glideLastIdx === i) {
+        releaseFlash(true);
+      } else if (glideLastIdx >= 0 && pads[glideLastIdx]) {
+        pads[glideLastIdx].classList.remove('flash');
+      }
+      hoveredPad.classList.add('flash');
+      glideLastIdx = hoveredIdx;
+      tapPadInPadsMode(hoveredIdx);
     }
   });
 
@@ -1941,6 +1984,11 @@ function attachPadHandlers(i, pad) {
     try { pad.releasePointerCapture(e.pointerId); } catch(_){}
     if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
     releaseFlash();
+    // Clear flash on the last glide pad (if different from the originating pad).
+    if (glideLastIdx >= 0 && glideLastIdx !== i && pads[glideLastIdx]) {
+      pads[glideLastIdx].classList.remove('flash');
+    }
+    glideLastIdx = -1;
 
     if (state.mode === 'scenes') {
       if (sceneLongHandled) return;
@@ -2002,6 +2050,10 @@ function attachPadHandlers(i, pad) {
   pad.addEventListener('pointercancel', () => {
     if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
     releaseFlash(true);
+    if (glideLastIdx >= 0 && glideLastIdx !== i && pads[glideLastIdx]) {
+      pads[glideLastIdx].classList.remove('flash');
+    }
+    glideLastIdx = -1;
     if (editingVel) {
       editingVel = false;
       pad.classList.remove('editing-vel');
@@ -2212,6 +2264,7 @@ document.querySelectorAll('.track').forEach(el => {
 const chipRow = document.getElementById('chipRow');
 const presetChip = document.getElementById('presetChip');
 const scaleChip  = document.getElementById('scaleChip');
+const viewChip   = document.getElementById('viewChip');
 
 function updateChipRow() {
   const tr = state.tracks[state.trackIdx];
@@ -2221,6 +2274,9 @@ function updateChipRow() {
     presetChip.textContent = preset ? preset.n : '—';
     const layoutTag = (tr.layout === 'fourths') ? ' · 4ths' : '';
     scaleChip.textContent = `${KEYS[tr.key].toLowerCase()} · ${tr.scale} · oct ${tr.octave}${layoutTag}`;
+    const view = tr.view || 'grid';
+    viewChip.textContent = view;
+    viewChip.classList.toggle('piano', view === 'piano');
   } else {
     chipRow.classList.add('hidden');
   }
@@ -2230,6 +2286,17 @@ updateChipRow();
 presetChip.addEventListener('pointerdown', (e) => {
   e.stopPropagation();
   openPresetPicker();
+});
+
+viewChip.addEventListener('pointerdown', (e) => {
+  e.stopPropagation();
+  const tr = state.tracks[state.trackIdx];
+  if (tr.type !== 'melodic') return;
+  tr.view = (tr.view === 'piano') ? 'grid' : 'piano';
+  updateChipRow();
+  applyMode();
+  updateSelectedSound();
+  saveState();
 });
 
 let scaleChipPressTimer = null;
