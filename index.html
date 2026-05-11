@@ -238,6 +238,17 @@
   .ctrl.cap svg { fill: var(--ink-soft); stroke: var(--ink-soft); }
   .ctrl.cap.capturing svg { fill: var(--accent); stroke: var(--accent); animation: capPulse 0.9s ease-in-out infinite; }
   @keyframes capPulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.5; transform: scale(0.9); } }
+  .ctrl.smp svg { fill: none; stroke: var(--ink-soft); }
+  .ctrl.smp.recording svg { stroke: var(--accent); animation: smpPulse 0.7s ease-in-out infinite; }
+  @keyframes smpPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+  /* Sample-assigned indicator: small accent dot top-left of the pad */
+  .pad.has-sample::after {
+    content: ""; position: absolute; top: 6px; left: 6px;
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--accent); opacity: 0.85;
+  }
+  .pads.piano-view .pad.has-sample::after { top: 4px; left: 4px; width: 5px; height: 5px; }
+  .pad.step-mode.has-sample::after, .pad.scene-mode.has-sample::after { display: none; }
   .playhead.recording { background: var(--accent); opacity: 0.9; width: 2px; }
 
   .footer-row { display: flex; align-items: center; justify-content: space-between; padding: 6px 16px 10px; }
@@ -499,7 +510,7 @@
 
   <div class="transport">
     <div class="ctrl cap" id="capBtn"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.2" stroke="none"/><path d="M12 4v3 M12 17v3 M4 12h3 M17 12h3 M6.34 6.34l2.12 2.12 M15.54 15.54l2.12 2.12 M6.34 17.66l2.12-2.12 M15.54 8.46l2.12-2.12"/></svg></div>
-    <div class="ctrl"><svg viewBox="0 0 24 24"><path d="M15 14 L20 14 L20 9"/><path d="M20 14 C20 8 16 5 12 5 C8 5 4 8 4 13"/></svg></div>
+    <div class="ctrl smp" id="smpBtn"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11v1a7 7 0 0 0 14 0v-1"/><path d="M12 19v3 M9 22h6"/></svg></div>
     <div class="ctrl" id="clearBtn"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="12" height="12" rx="1"/><rect x="8" y="8" width="12" height="12" rx="1"/></svg></div>
     <div class="ctrl"><svg viewBox="0 0 24 24"><line x1="4" y1="4" x2="20" y2="4"/><line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="14" x2="20" y2="14"/><line x1="4" y1="19" x2="20" y2="19"/></svg></div>
     <div class="ctrl rec" id="recBtn"><svg viewBox="0 0 24 24" stroke-width="0"><circle cx="12" cy="12" r="6"/></svg></div>
@@ -685,6 +696,8 @@ const state = {
   playing: false,
   recording: false,
   capturing: false,
+  recordingSample: false,
+  samples: Array.from({length: NUM_TRACKS}, () => Array(NUM_PADS).fill(null)),
   currentStep: 0,
   scenesFocus: { track: 0, scene: 0 },
   hintsSeen: { pads:false, seq:false, tracks:false, melodic:false, scenes:false, presets:false },
@@ -1005,6 +1018,7 @@ function initAudio() {
   for (let i = 0; i < sr; i++) nd[i] = Math.random() * 2 - 1;
 
   applyKnobsToAudio();
+  loadAllSamples();   // restore previously-recorded samples from IndexedDB
 }
 
 function ensureAudio() {
@@ -1647,6 +1661,96 @@ const MELODIC_VOICE_FNS = {
 };
 
 /* ============================================================
+   SAMPLE PLAYBACK & PERSISTENCE
+============================================================ */
+const SAMPLE_REF_FREQ = 261.63;   // C4 — sample's "natural" pitch for melodic playback
+
+function playSample(t, v, bus, buf, rate) {
+  const src = audioCtx.createBufferSource();
+  src.buffer = buf;
+  src.playbackRate.value = Math.max(0.06, Math.min(16, rate || 1));
+  const env = audioCtx.createGain();
+  const dur = buf.duration / src.playbackRate.value;
+  const att = 0.003, rel = Math.min(0.040, dur * 0.2);
+  env.gain.setValueAtTime(0, t);
+  env.gain.linearRampToValueAtTime(v, t + att);
+  env.gain.setValueAtTime(v, t + Math.max(att, dur - rel));
+  env.gain.linearRampToValueAtTime(0, t + dur);
+  src.connect(env).connect(bus);
+  src.start(t);
+  src.stop(t + dur + 0.05);
+}
+
+// --- IndexedDB persistence (samples can be MBs; localStorage is too small) ---
+const SAMPLE_DB = 'klinekraft-samples';
+const SAMPLE_STORE = 'samples';
+let samplesDbPromise = null;
+function samplesDb() {
+  if (samplesDbPromise) return samplesDbPromise;
+  samplesDbPromise = new Promise((resolve, reject) => {
+    if (!('indexedDB' in window)) { resolve(null); return; }
+    const req = indexedDB.open(SAMPLE_DB, 1);
+    req.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains(SAMPLE_STORE)) db.createObjectStore(SAMPLE_STORE);
+    };
+    req.onsuccess = (e) => resolve(e.target.result);
+    req.onerror   = () => resolve(null);   // graceful degrade — feature works in memory only
+  });
+  return samplesDbPromise;
+}
+
+async function saveSample(t, p, buf) {
+  try {
+    const db = await samplesDb();
+    if (!db) return;
+    const channels = [];
+    for (let c = 0; c < buf.numberOfChannels; c++) channels.push(buf.getChannelData(c).slice());
+    const data = { channels, sampleRate: buf.sampleRate, length: buf.length };
+    const tx = db.transaction(SAMPLE_STORE, 'readwrite');
+    tx.objectStore(SAMPLE_STORE).put(data, `${t}_${p}`);
+  } catch (e) { /* swallow */ }
+}
+
+async function deleteSample(t, p) {
+  try {
+    const db = await samplesDb();
+    if (!db) return;
+    const tx = db.transaction(SAMPLE_STORE, 'readwrite');
+    tx.objectStore(SAMPLE_STORE).delete(`${t}_${p}`);
+  } catch (e) {}
+}
+
+async function loadAllSamples() {
+  if (!audioCtx) return;
+  try {
+    const db = await samplesDb();
+    if (!db) return;
+    const tx = db.transaction(SAMPLE_STORE, 'readonly');
+    const store = tx.objectStore(SAMPLE_STORE);
+    const keysReq = store.getAllKeys();
+    const valsReq = store.getAll();
+    await new Promise((resolve) => {
+      tx.oncomplete = resolve;
+      tx.onerror = resolve;
+    });
+    const keys = keysReq.result || [];
+    const vals = valsReq.result || [];
+    for (let i = 0; i < keys.length; i++) {
+      const m = /^(\d+)_(\d+)$/.exec(keys[i]);
+      if (!m) continue;
+      const t = +m[1], p = +m[2];
+      const d = vals[i];
+      if (!d || !d.channels || !d.length) continue;
+      const buf = audioCtx.createBuffer(d.channels.length, d.length, d.sampleRate);
+      for (let c = 0; c < d.channels.length; c++) buf.getChannelData(c).set(d.channels[c]);
+      if (state.samples[t]) state.samples[t][p] = buf;
+    }
+    applyMode();
+  } catch (e) {}
+}
+
+/* ============================================================
    DISPATCHER
 ============================================================ */
 function playSound(trackIdx, padIdx, when, vel = 100) {
@@ -1655,6 +1759,16 @@ function playSound(trackIdx, padIdx, when, vel = 100) {
   const t = when ?? audioCtx.currentTime;
   const v = vel / 100;
   const bus = busFor(trackIdx, padIdx);
+
+  // Sample overrides synth voice for this pad if one's been recorded.
+  const sample = state.samples[trackIdx] && state.samples[trackIdx][padIdx];
+  if (sample) {
+    const rate = (track.type === 'melodic')
+      ? padFreq(track, padIdx) / SAMPLE_REF_FREQ
+      : pitchMul();                      // drums respect the transpose knob
+    playSample(t, v, bus, sample, rate);
+    return;
+  }
 
   if (track.type === 'drums') {
     const drum = DRUM_KIT[padIdx];
@@ -2084,7 +2198,7 @@ function applyMode(){
   padsEl.classList.toggle('piano-view', isPiano);
   pads.forEach((pad, i) => {
     pad.classList.remove('step-mode','step-on','step-current','has-step','selected','empty','editing-vel',
-      'scene-mode','scene-empty','scene-has','scene-playing','scene-queued','scene-focus','is-root');
+      'scene-mode','scene-empty','scene-has','scene-playing','scene-queued','scene-focus','is-root','has-sample');
     const label = pad.querySelector('.pad-label');
     const num = pad.querySelector('.step-num');
     pad.style.background = '';
@@ -2113,6 +2227,7 @@ function applyMode(){
       if (pat[i].some(s => s > 0)) pad.classList.add('has-step');
       if (i === state.selectedPad) pad.classList.add('selected');
       if (isPadRoot(tr, i)) pad.classList.add('is-root');
+      if (state.samples[state.trackIdx] && state.samples[state.trackIdx][i]) pad.classList.add('has-sample');
     } else { // seq
       pad.classList.add('step-mode');
       label.textContent = '';
@@ -2584,6 +2699,127 @@ capBtn.addEventListener('pointerdown', () => {
   if (state.capturing) endCapture();
   else startCapture();
   if (window.navigator.vibrate) window.navigator.vibrate(8);
+});
+
+/* ============================================================
+   MIC SAMPLER — record audio into the selected pad
+============================================================ */
+const smpBtn = document.getElementById('smpBtn');
+let smpStream    = null;
+let smpSource    = null;
+let smpProcessor = null;
+let smpSilentGain = null;
+let smpChunks    = [];
+let smpSampleRate = 44100;
+
+function trimSilence(buf, threshold = 0.005, lead = 64, tail = 256) {
+  const ch = buf.getChannelData(0);
+  let s = 0, e = ch.length - 1;
+  while (s < ch.length && Math.abs(ch[s]) < threshold) s++;
+  while (e > s && Math.abs(ch[e]) < threshold) e--;
+  if (e <= s) return buf;
+  s = Math.max(0, s - lead);
+  e = Math.min(ch.length - 1, e + tail);
+  const newLen = e - s + 1;
+  const out = audioCtx.createBuffer(buf.numberOfChannels, newLen, buf.sampleRate);
+  for (let c = 0; c < buf.numberOfChannels; c++) {
+    const src = buf.getChannelData(c), dst = out.getChannelData(c);
+    for (let i = 0; i < newLen; i++) dst[i] = src[s + i];
+  }
+  return out;
+}
+
+async function startSampleRecord() {
+  if (state.capturing) endCapture();
+  if (state.recording) setRecording(false);
+  ensureAudio();
+  if (!audioCtx) { showToast('audio not ready'); return; }
+  try {
+    if (!smpStream) {
+      smpStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    }
+  } catch (e) {
+    showToast('mic blocked');
+    return;
+  }
+  smpChunks = [];
+  smpSampleRate = audioCtx.sampleRate;
+  smpSource = audioCtx.createMediaStreamSource(smpStream);
+  // ScriptProcessor is deprecated but ubiquitous and single-file-friendly.
+  smpProcessor = audioCtx.createScriptProcessor(2048, 1, 1);
+  smpProcessor.onaudioprocess = (e) => {
+    if (state.recordingSample) {
+      smpChunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+    }
+  };
+  smpSilentGain = audioCtx.createGain();
+  smpSilentGain.gain.value = 0;            // mute the mic monitor; we just need the node to run
+  smpSource.connect(smpProcessor).connect(smpSilentGain).connect(audioCtx.destination);
+  state.recordingSample = true;
+  smpBtn.classList.add('recording');
+  showToast('sampling… pad ' + (state.selectedPad + 1));
+}
+
+function stopSampleRecord() {
+  if (!state.recordingSample) return;
+  state.recordingSample = false;
+  smpBtn.classList.remove('recording');
+
+  if (smpSource) { try { smpSource.disconnect(); } catch(_) {} }
+  if (smpProcessor) { try { smpProcessor.disconnect(); } catch(_) {} smpProcessor.onaudioprocess = null; }
+  if (smpSilentGain) { try { smpSilentGain.disconnect(); } catch(_) {} }
+  smpSource = smpProcessor = smpSilentGain = null;
+
+  let total = 0;
+  for (const c of smpChunks) total += c.length;
+  if (total < 512) { showToast('too short'); return; }
+  const raw = audioCtx.createBuffer(1, total, smpSampleRate);
+  const out = raw.getChannelData(0);
+  let off = 0;
+  for (const c of smpChunks) { out.set(c, off); off += c.length; }
+  // Normalize peak to -3 dBFS
+  let peak = 0;
+  for (let i = 0; i < out.length; i++) { const a = Math.abs(out[i]); if (a > peak) peak = a; }
+  if (peak > 0) {
+    const gain = 0.708 / peak;
+    for (let i = 0; i < out.length; i++) out[i] *= gain;
+  }
+  const trimmed = trimSilence(raw);
+  const t = state.trackIdx, p = state.selectedPad;
+  state.samples[t][p] = trimmed;
+  applyMode();
+  saveSample(t, p, trimmed);
+  showToast(`sample → ${state.tracks[t].name} ${p+1}`);
+}
+
+let smpPressTimer = null;
+let smpLongHandled = false;
+smpBtn.addEventListener('pointerdown', () => {
+  smpLongHandled = false;
+  smpPressTimer = setTimeout(() => {
+    smpLongHandled = true;
+    // Long-press: clear sample on the currently-selected pad.
+    const t = state.trackIdx, p = state.selectedPad;
+    if (state.recordingSample) stopSampleRecord();
+    if (state.samples[t] && state.samples[t][p]) {
+      state.samples[t][p] = null;
+      deleteSample(t, p);
+      applyMode();
+      showToast('sample cleared');
+      if (window.navigator.vibrate) window.navigator.vibrate([8, 30, 8]);
+    } else {
+      showToast('no sample here');
+    }
+  }, LONG_PRESS_MS);
+});
+smpBtn.addEventListener('pointerup', () => {
+  if (smpPressTimer) { clearTimeout(smpPressTimer); smpPressTimer = null; }
+  if (smpLongHandled) return;
+  if (state.recordingSample) stopSampleRecord();
+  else startSampleRecord();
+});
+smpBtn.addEventListener('pointercancel', () => {
+  if (smpPressTimer) { clearTimeout(smpPressTimer); smpPressTimer = null; }
 });
 
 const bpmEl = document.getElementById('bpmDisplay');
